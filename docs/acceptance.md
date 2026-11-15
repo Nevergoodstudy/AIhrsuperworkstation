@@ -14,6 +14,7 @@
 | 浏览器完整流程 | `PLAYWRIGHT_CHANNEL=msedge npm run test:e2e` | 2/2 通过；使用本机 Microsoft Edge / Chromium，约 7 秒，覆盖三个独立浏览器身份和管理员建号改密 |
 | 生产前端构建 | 浏览器测试的 webServer 先运行 `npm run build` | 构建成功后启动测试服务，随后完成上述两条浏览器流程 |
 | 依赖已知漏洞 | `npm audit --audit-level=high` | 输出 `found 0 vulnerabilities`；仅代表本次注册表审计结果，不等于全面安全审计 |
+| GitHub Actions 远端持续集成 | [2026-11-15 运行记录](https://github.com/Nevergoodstudy/AIhrsuperworkstation/actions/runs/43680605194)，提交 17df779 | 全部通过：Ubuntu / Node.js 24 依赖安装与审计、服务端测试、前端构建、Chromium 浏览器测试、Compose 配置校验和 Docker 镜像构建；不包含正式环境部署验收 |
 
 自动化测试来源：
 
@@ -44,8 +45,7 @@
 
 ## 尚未验证或不在本版范围内
 
-- 当前开发机没有 Docker：Dockerfile、Compose、Caddy 和容器恢复步骤已交付，但镜像构建、容器运行、卷权限、HTTPS 证书及容器恢复没有本机实跑结果。YAML 语法检查不能替代这些验证。
-- CI 工作流已配置，当前没有远端 CI 成功运行记录；必须以实际作业结果为准。
+- 当前开发机没有 Docker。镜像构建和 Compose 配置校验已在上述远端 CI 通过；容器实际启动、数据卷权限、Caddy / HTTPS 证书和容器恢复仍待正式或与正式配置一致的环境实跑。
 - 未完成真实域名和服务器的 HTTPS、Secure Cookie、代理来源、限速与外部网络验收。
 - 没有正式 SMTP 收件箱送达记录。accepted 只表示发送服务接受；需要检查收件箱、垃圾箱、退信与服务商投递记录。
 - 没有外部 AI 服务验收记录。未配置时人工招聘流程仍可使用；启用前需要企业确认候选人授权、传输范围与服务商配置。
