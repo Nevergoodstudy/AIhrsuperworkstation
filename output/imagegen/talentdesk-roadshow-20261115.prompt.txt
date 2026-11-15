@@ -1,0 +1,21 @@
+Use case: ads-marketing / productivity-visual.
+Create ONE finished premium Chinese startup roadshow recommendation poster for the real product TalentDesk 招聘工作台. This is a landscape 16:9 investor presentation key visual, intended for full-screen projection. Output a wide 16:9 canvas, ideally 2560 × 1440 or 3840 × 2160. Professional, calm, distinctive editorial art direction, beautifully typeset and genuinely presentation-ready.
+
+Project truth: TalentDesk is a recruiting workspace for one enterprise, serving HR, hiring departments and candidates. Its actual workflow is job requirements → resumes → assessment tasks → manual review → feedback. Optional AI organizes verifiable source evidence; humans make hiring judgments. No automatic hiring/rejection, no automatic candidate ranking, no promised fairness, no invented efficiency figures, customers, revenue or certifications. Production deployment and business acceptance are still pending. Do not depict operational metrics.
+
+Art direction: richly layered forest-green background #071b17 and #173d33, warm ivory #f1eddc paper, mint #b9f4d1 evidence trails, restrained pale-gold #e4c18d annotations. Subtle fine paper grain and realistic architectural shadows. Mix elegant Chinese editorial typography with restrained premium 3D paper sculpture. No purple or blue cyberpunk gradients, no generic robot, no brain icon, no stock business handshake.
+
+Composition: generous safe margins. Left 46%: immaculate text hierarchy, brand at top, enormous two-line main headline, then a short supporting statement. Right 54%: a visually striking coherent sculpture of folded ivory resume pages transforming into an opened assessment dossier and a human-reviewed annotated evidence sheet, arranged along one continuous mint ribbon on stepped dark-green architectural platforms. Fine mint source lines connect highlighted passages to review notes, and a tasteful pale-gold fountain pen implies human judgment. The sculpture must tell the actual recruiting story, not be a pile of unrelated software cards. Only abstract typographic rules on paper, no fake candidate names, scores or personal data. A very subtle thin orbital paper arc can unify the composition.
+
+Bottom band: a precise, readable five-stage horizontal workflow with small refined line icons, fine connector lines and the five exact Chinese labels below. Keep it airy, consistent and aligned. Leave the composition balanced and impactful on a large screen.
+
+Render ONLY the following text, exactly and legibly, with no extra text or duplicate letters:
+Brand: “TalentDesk”
+Brand descriptor: “招聘工作台”
+Main headline on two lines: “让招聘判断，” / “有据可循。”
+Supporting line: “可选 AI 整理证据 · 招聘判断由人完成”
+Small sculpture callouts, if needed: “原文证据” and “人工复核”
+Workflow: “岗位” → “简历” → “测评” → “人工复核” → “反馈”
+Small footer: “产品流程示意 · 正式环境待部署与业务验收”
+
+Use exceptionally clear Chinese glyphs, optical alignment and comfortable line spacing. Headline must dominate, high contrast ivory on dark green. Footer should be secondary but readable, not microscopic. No watermark, no invented logos, no QR code, no decorative pseudo-text, no phone or laptop product frame, no collage grid. The finished result should feel like an art-directed enterprise product launch poster with a strong original paper-and-evidence metaphor.

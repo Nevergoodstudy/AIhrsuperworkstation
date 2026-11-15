@@ -1,0 +1,22 @@
+{
+  "date": "2026-11-14T17:06:30.556Z",
+  "mimeType": "video/webm;codecs=vp9,opus",
+  "width": 1920,
+  "height": 1080,
+  "fps": 30,
+  "audioTracks": 1,
+  "elapsedMs": 96018,
+  "bytes": 54211670,
+  "ending": {
+    "time": 96,
+    "playing": false,
+    "muted": false,
+    "subtitles": true,
+    "scene": 7,
+    "audioReady": true,
+    "audioState": "running"
+  },
+  "errors": [],
+  "durationMetadataSeconds": 96,
+  "metadataFinalizedAt": "2026-11-14T17:12:16.606Z"
+}

@@ -1,0 +1,10 @@
+import {readFile,writeFile} from 'node:fs/promises';
+import {fileURLToPath} from 'node:url';
+import {dirname,join} from 'node:path';
+const root=dirname(fileURLToPath(import.meta.url));
+const [shell,art,player]=await Promise.all(['shell.html','scenes.js','player.js'].map(name=>readFile(join(root,name),'utf8')));
+const wrap=text=>'<script>\n'+text.replaceAll('</script','<'+String.fromCharCode(92)+'/script')+'\n</script>';
+const result=shell.replace('<!-- FILM_ART -->',wrap(art)).replace('<!-- FILM_PLAYER -->',wrap(player));
+await writeFile(join(root,'index.html'),result);
+await writeFile(join(root,'..','..','简历之后.html'),result);
+console.log('Built self-contained index.html ('+Buffer.byteLength(result)+' bytes)');

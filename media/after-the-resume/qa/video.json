@@ -1,0 +1,62 @@
+{
+  "date": "2026-11-14T17:12:19.276Z",
+  "browser": "Microsoft Edge headless",
+  "bytes": 54211670,
+  "header": "1a45dfa3",
+  "initial": {
+    "width": 1920,
+    "height": 1080,
+    "duration": 96,
+    "readyState": 4,
+    "seekable": [
+      [
+        0,
+        96
+      ]
+    ]
+  },
+  "samples": [
+    {
+      "time": 6,
+      "nonBlackRatio": 1,
+      "meanRGB": 49.947649176954734,
+      "hash": 334591083
+    },
+    {
+      "time": 48,
+      "nonBlackRatio": 1,
+      "meanRGB": 60.53901363168724,
+      "hash": 560533311
+    },
+    {
+      "time": 90,
+      "nonBlackRatio": 1,
+      "meanRGB": 34.53676826131687,
+      "hash": 2279119838
+    },
+    {
+      "time": 95,
+      "nonBlackRatio": 1,
+      "meanRGB": 34.70898405349794,
+      "hash": 3354059105
+    }
+  ],
+  "decoded": {
+    "time": 1.42895,
+    "duration": 96,
+    "readyState": 4,
+    "videoFrames": 264,
+    "droppedFrames": 0,
+    "audioDecodedBytes": 155358,
+    "videoDecodedBytes": 5195891,
+    "error": null
+  },
+  "checks": [
+    "EBML WebM signature and nonempty file",
+    "1920 × 1080 video decoder output",
+    "Distinct nonblack decoded frames at 6, 48, 90 and 95 seconds",
+    "Playback time advances with decoded video frames and decoded audio bytes",
+    "Duration near 96 seconds; no media or script errors"
+  ],
+  "errors": []
+}

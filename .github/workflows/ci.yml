@@ -1,0 +1,33 @@
+name: Verify business workflow
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm audit --audit-level=high
+      - run: npm test
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - name: Validate production image and Compose configuration
+        env:
+          SITE_ADDRESS: hr.example.test
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+          docker build -t talentdesk:ci .
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: workflow-diagnostics
+          path: test-results/
+          retention-days: 7

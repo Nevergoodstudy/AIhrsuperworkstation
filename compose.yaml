@@ -1,0 +1,66 @@
+name: talentdesk
+services:
+  app:
+    image: talentdesk:local
+    build: .
+    init: true
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3001
+      DATA_DIR: /app/data
+      TRUST_PROXY: 1
+    volumes:
+      - talent_data:/app/data
+    networks: [backend]
+    read_only: true
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 20s
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?Set SITE_ADDRESS in .env}
+    ports: ["80:80", "443:443", "443:443/udp"]
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [backend]
+    depends_on:
+      app: {condition: service_healthy}
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+  backup:
+    profiles: [tools]
+    image: talentdesk:local
+    build: .
+    init: true
+    entrypoint: [node, scripts/backup.mjs]
+    command: [/backups]
+    environment: {DATA_DIR: /app/data}
+    volumes:
+      - talent_data:/app/data:ro
+      - talent_backups:/backups
+    network_mode: none
+    read_only: true
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+volumes:
+  talent_data:
+    name: ${TALENT_DATA_VOLUME:-talentdesk_talent_data}
+  talent_backups:
+    name: ${TALENT_BACKUP_VOLUME:-talentdesk_talent_backups}
+  caddy_data:
+  caddy_config:
+networks:
+  backend:

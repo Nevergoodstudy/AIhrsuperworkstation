@@ -1,0 +1,23 @@
+node_modules/
+dist/
+.vite/
+data/
+.env
+.env.*
+!.env.example
+backups/
+test-results/
+playwright-report/
+.DS_Store
+*.log
+
+# Runtime databases and sidecar files must stay out of Git.
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+
+# The large video is delivered as a GitHub Release asset.
+/media/after-the-resume/简历之后.webm

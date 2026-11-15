@@ -1,0 +1,37 @@
+{
+  "checked_on": "2026-11-15",
+  "timezone": "Asia/Shanghai",
+  "provider_model_listing_endpoint": "https://openaiapi.cc/v1/models",
+  "model_selection_basis": "Latest image model series returned by the provider, using provider-supplied created metadata.",
+  "requested_api_model": "gpt-image-2.6-flare",
+  "provider_latest_image_series_identifiers": [
+    "gpt-image-2.6-flare",
+    "gpt-image-2.6-sunburst"
+  ],
+  "provider_created_timestamp": 1793750400,
+  "identity_note": "Third-party API model identifier; underlying implementation is not independently verified.",
+  "generation_method": "Authorized local codex-imagegen CLI",
+  "request": {
+    "size": "auto",
+    "quality": "high",
+    "output_format": "png"
+  },
+  "prompt_file": "talentdesk-roadshow-20261115.prompt.txt",
+  "original": {
+    "file": "talentdesk-roadshow-20261115.png",
+    "dimensions": [
+      1672,
+      941
+    ]
+  },
+  "presentation_export": {
+    "file": "talentdesk-roadshow-1920x1080-20261115.png",
+    "dimensions": [
+      1920,
+      1080
+    ],
+    "processing": "Resampled using macOS sips to standard presentation dimensions. Export resolution is not native generation resolution.",
+    "sha256": "f35c1a585bfc087b0cf56eba24d7916a4dd205916383441d3f7a49e22126e2ba"
+  },
+  "visual_review": "Original image visually inspected: brand, main headline, supporting text, all five workflow labels and deployment-status footer are legible and match project facts."
+}

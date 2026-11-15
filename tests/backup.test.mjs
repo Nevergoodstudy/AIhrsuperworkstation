@@ -1,0 +1,20 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
+import { fixture, setupBusiness, invite } from './helpers.mjs';
+import { createBackup, verifyBackup, restoreBackup } from '../scripts/backup.mjs';
+test('在线备份与原件一同恢复、清空会话及损坏拒绝',async t=>{
+ const f=await fixture();t.after(()=>f.cleanup());const root=await mkdtemp(path.join(os.tmpdir(),'talent-backup-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ const hr=f.client();await hr.login();const b=await setupBusiness(hr);const link=await invite(hr,b);await f.client().call('/api/portal/redeem','POST',{token:link.token});
+ const bytes='Node.js experience with SQL and durable orders.';const form=new FormData();for(const [key,value] of Object.entries({jobId:b.jobId,name:'原件恢复',email:'',phone:'',consent:'true'}))form.append(key,value);form.append('resume',new Blob([bytes]),'resume.txt');
+ const uploaded=await hr.call('/api/candidates/import','POST',form);assert.equal(uploaded.status,201);const file=f.db.prepare('SELECT file_key FROM candidates WHERE id=?').get(uploaded.body.id).file_key;
+ const backup=await createBackup(f.dataDir,root),manifest=await verifyBackup(backup);assert.equal(manifest.files.length,2);
+ const restored=await restoreBackup(backup,path.join(root,'restore'));const db=new DatabaseSync(path.join(restored,'talent.sqlite'));
+ assert.equal(db.prepare('SELECT count(*) AS n FROM candidates').get().n,2);for(const table of ['sessions','portal_sessions'])assert.equal(db.prepare('SELECT count(*) AS n FROM '+table).get().n,0);db.close();
+ assert.equal(await readFile(path.join(restored,'resumes',file),'utf8'),bytes);await assert.rejects(restoreBackup(backup,restored));
+ await writeFile(path.join(backup,'resumes',file),'changed original');await assert.rejects(verifyBackup(backup),/不符/);await writeFile(path.join(backup,'resumes',file),bytes);
+ await writeFile(path.join(backup,'talent.sqlite'),'corruption');await assert.rejects(verifyBackup(backup),/不符/);
+});
