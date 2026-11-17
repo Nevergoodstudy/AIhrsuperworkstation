@@ -30,14 +30,16 @@ async function volume(suffix) {
 }
 async function moduleRun(suffix, mounts, source) {
   const name = prefix + '-' + suffix; containers.add(name);
-  return docker(['run', '--rm', '-i', '--name', name, '--label', label, '--network', 'none', ...sandbox, ...mounts.flatMap(value => ['--mount', value]), '--entrypoint', 'node', image, '--input-type=module', '-'], source);
+  const result = await docker(['run', '--rm', '-i', '--name', name, '--label', label, '--network', 'none', ...sandbox, ...mounts.flatMap(value => ['--mount', value]), '--entrypoint', 'node', image, '--input-type=module', '-'], source);
+  containers.delete(name); // A successful --rm run has already removed its container.
+  return result;
 }
 function client(base, initialCookies = {}) {
   const cookies = new Map(Object.entries(initialCookies));
   return {
     cookies,
     async call(route, method = 'GET', body, examId) {
-      const response = await fetch(base + route, { method, signal: AbortSignal.timeout(15000), headers: {
+      const response = await fetch((typeof base === 'function' ? base() : base) + route, { method, signal: AbortSignal.timeout(15000), headers: {
         Origin: origin, 'X-Requested-With': 'TalentDesk', ...(examId ? { 'X-Exam-Id': examId } : {}),
         Cookie: [...cookies].map(([key, value]) => key + '=' + value).join('; '),
         ...(body !== undefined && !(body instanceof FormData) ? { 'Content-Type': 'application/json' } : {})
@@ -56,7 +58,13 @@ async function ready(base) {
     try { const result = await fetch(base + '/api/ready', { signal: AbortSignal.timeout(2000) }); if (result.ok) return; } catch { /* startup or restart in progress */ }
     await new Promise(resolve => setTimeout(resolve, 300));
   }
-  throw new Error('Container did not become ready within 45 seconds');
+  throw new Error('Container did not become ready within 45 seconds at ' + base);
+}
+function publishedBase(inspect) {
+  const port = inspect.NetworkSettings.Ports['3001/tcp']?.[0];
+  assert.equal(port?.HostIp, '127.0.0.1');
+  assert.match(port.HostPort, /^[0-9]+$/);
+  return 'http://127.0.0.1:' + port.HostPort;
 }
 async function startApp(suffix, data, directory = '/app/data') {
   const name = prefix + '-' + suffix; containers.add(name);
@@ -67,8 +75,7 @@ async function startApp(suffix, data, directory = '/app/data') {
   const inspect = JSON.parse(await docker(['inspect', name]))[0];
   assert.ok(inspect.Config.User && !['0', 'root', '0:0'].includes(inspect.Config.User));
   assert.equal(inspect.HostConfig.ReadonlyRootfs, true);
-  const port = inspect.NetworkSettings.Ports['3001/tcp'][0]; assert.equal(port.HostIp, '127.0.0.1');
-  const base = 'http://127.0.0.1:' + port.HostPort; await ready(base);
+  const base = publishedBase(inspect); await ready(base);
   expect(await client(base).call('/api/health'), 200);
   const runtime = JSON.parse(await docker(['exec', name, 'node', '-e', `const fs=require('node:fs');console.log(JSON.stringify({uid:process.getuid(),mode:fs.statSync(process.env.DATA_DIR).mode&511,dbMode:fs.statSync(process.env.DATA_DIR+'/talent.sqlite').mode&511}))`]));
   assert.notEqual(runtime.uid, 0); assert.equal(runtime.mode, 0o700); assert.equal(runtime.dbMode, 0o600);
@@ -85,7 +92,8 @@ try {
     const db=openDatabase('/app/data');
     db.prepare('INSERT INTO users(id,name,email,password_hash,role,department,must_change,created_at) VALUES(?,?,?,?,?,?,0,?)').run(id(),'Smoke HR','smoke@example.test',await hashPassword(${JSON.stringify(password)}),'hr','',now());db.close();
   `);
-  const app = await startApp('app', data), hr = client(app.base), portal = client(app.base);
+  const app = await startApp('app', data), hr = client(() => app.base), portal = client(() => app.base);
+  report.endpoints = { initial: app.base };
   expect(await hr.call('/api/auth/login', 'POST', { email: 'smoke@example.test', password }), 200);
   const job = expect(await hr.call('/api/jobs', 'POST', { title: 'Synthetic engineer', department: 'Synthetic', location: 'Test', description: 'Synthetic isolation test', requirements: ['Node.js', 'SQL'], status: '招聘中' }), 201);
   const question = expect(await hr.call('/api/questions', 'POST', { title: 'Describe a transaction.', competency: 'SQL', type: '简答题', level: '基础', minutes: 5, rubric: 'Synthetic rubric', active: true }), 201);
@@ -102,7 +110,11 @@ try {
   expect(await portal.call('/api/portal/answers', 'PUT', { revision: 0, answers, usedAI: false }, invitation.id), 200);
   assert.equal(expect(await hr.call('/api/candidates/' + candidate.id + '/resume'), 200), resume);
   report.checks.push('non-root/read-only container, health/ready, private disk permissions, synthetic HTTP workflow');
-  await docker(['restart', app.name]); await ready(app.base);
+  await docker(['restart', app.name]);
+  // Docker may allocate a new ephemeral host port when a container restarts.
+  app.base = publishedBase(JSON.parse(await docker(['inspect', app.name]))[0]);
+  report.endpoints.afterRestart = app.base;
+  await ready(app.base);
   assert.deepEqual(expect(await portal.call('/api/portal/me', 'GET', undefined, invitation.id), 200).answers, answers);
   assert.equal(expect(await hr.call('/api/candidates/' + candidate.id + '/resume'), 200), resume);
   report.checks.push('restart preserved answers, staff/portal sessions and original resume');
