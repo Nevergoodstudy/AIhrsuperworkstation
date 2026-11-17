@@ -5,7 +5,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -25,6 +25,15 @@ jobs:
           cp .env.example .env
           docker compose config --quiet
           docker build -t talentdesk:ci .
+      - name: Run isolated container persistence and recovery acceptance
+        run: node scripts/container-smoke.mjs talentdesk:ci > container-smoke-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: container-smoke-report
+          path: container-smoke-report.json
+          if-no-files-found: ignore
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

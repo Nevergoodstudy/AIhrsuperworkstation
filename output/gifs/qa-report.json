@@ -1,0 +1,80 @@
+[
+  {
+    "file": "01-resume-evidence.gif",
+    "size": [
+      1280,
+      900
+    ],
+    "frames": 126,
+    "durationSeconds": 10.5,
+    "loop": 0,
+    "changedTransitions": 125,
+    "bytes": 1589719,
+    "sha256": "6cc6fea904ced416aabe734b3b90b5529dea3adb35f0bf1d737e2581082ab9a4"
+  },
+  {
+    "file": "02-candidate-assessment.gif",
+    "size": [
+      1280,
+      900
+    ],
+    "frames": 180,
+    "durationSeconds": 15.0,
+    "loop": 0,
+    "changedTransitions": 179,
+    "bytes": 1441751,
+    "sha256": "a916005d90a2e67b0e909f7ee04445903ae1f421a7fea8643994c83ef1f4c6cb"
+  },
+  {
+    "file": "03-human-review-feedback.gif",
+    "size": [
+      1280,
+      900
+    ],
+    "frames": 126,
+    "durationSeconds": 10.5,
+    "loop": 0,
+    "changedTransitions": 125,
+    "bytes": 1141777,
+    "sha256": "acf136aaa1d6d483e059f1af483659cca97de2987f9b56d923aace9972b9e288"
+  },
+  {
+    "file": "04-roles-privacy.gif",
+    "size": [
+      1280,
+      900
+    ],
+    "frames": 141,
+    "durationSeconds": 11.75,
+    "loop": 0,
+    "changedTransitions": 140,
+    "bytes": 1571203,
+    "sha256": "5173e7a18ac1dc4f50727d0927a30589e73df3be49c62a1074c2947ddaab6d41"
+  },
+  {
+    "file": "talentdesk-overview-compact.gif",
+    "size": [
+      960,
+      675
+    ],
+    "frames": 221,
+    "durationSeconds": 27.63,
+    "loop": 0,
+    "changedTransitions": 220,
+    "bytes": 2157450,
+    "sha256": "2ad7bc01d9611e6b13387a23aa75eddcbaa3c507c7486c5e510fc2614c43cc5e"
+  },
+  {
+    "file": "talentdesk-overview.gif",
+    "size": [
+      1280,
+      900
+    ],
+    "frames": 332,
+    "durationSeconds": 27.66,
+    "loop": 0,
+    "changedTransitions": 331,
+    "bytes": 4284290,
+    "sha256": "d87e2a7d9f0a716747c5c91614a3df3e59559110bd3078b376f208dcdda69488"
+  }
+]

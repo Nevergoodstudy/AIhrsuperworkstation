@@ -1,6 +1,7 @@
 # TalentDesk · 招聘工作台
 
 [![业务流程验证](https://github.com/Nevergoodstudy/AIhrsuperworkstation/actions/workflows/ci.yml/badge.svg)](https://github.com/Nevergoodstudy/AIhrsuperworkstation/actions/workflows/ci.yml)
+[![最新发布](https://img.shields.io/github/v/release/Nevergoodstudy/AIhrsuperworkstation)](https://github.com/Nevergoodstudy/AIhrsuperworkstation/releases/latest)
 
 ![TalentDesk 项目介绍：让招聘判断，有据可循](output/imagegen/talentdesk-roadshow-1920x1080-20261115.png)
 
@@ -19,6 +20,16 @@
 
 技术栈：React 19、Vite 8、Node.js 24、Express 5、SQLite；浏览器测试使用 Playwright，持续集成使用 GitHub Actions。
 
+## v1.1.0 · 第一阶段改进（2026-11-17）
+
+- 同浏览器多份邀请分别核对页面测评 ID 与授权会话，阻止旧标签页串写；冲突时保留草稿并提供下载副本。
+- 测评事件遵循阶段归属规则，保留 HR 手动设置的面试、录用等决定，并在事务中记录阶段事件。
+- AI 分析写回前重新校验账号会话及输入版本；旧分析明确标记过期，概述提示需要人工核验。
+- 数据库自动迁移至 v4，新增阶段事件和分析运行记录；已覆盖真实旧版结构迁移与备份恢复回归。
+- 增加隔离容器启动、重启持久化、原件、在线备份和新卷恢复验收，CI 上传检查报告。
+
+完整说明见 [变更记录](CHANGELOG.md)、[发布说明](docs/releases/v1.1.0.md) 和 [第一阶段实施记录](docs/phase-one-results-2026-11-17.md)。升级前必须备份并校验，再在隔离副本验证迁移；回滚使用旧版本与兼容快照。单企业、单实例的运行范围不变。
+
 ## 文档与项目资料
 
 | 入口 | 内容 |
@@ -26,10 +37,14 @@
 | [本地启动](#本地启动) | 依赖安装、管理员创建与开发环境启动 |
 | [运维手册](docs/operations.md) | HTTPS 部署、监控、定时备份、恢复、升级和回滚 |
 | [交付验收记录](docs/acceptance.md) | 已验证范围、验证证据、能力边界和待验收事项 |
+| [版本变更](CHANGELOG.md) / [v1.1.0 发布说明](docs/releases/v1.1.0.md) | 版本历史、改进内容、升级注意事项与验证结果 |
+| [改进策略](docs/improvement-strategy-2026-11-16.md) / [第一阶段实施记录](docs/phase-one-results-2026-11-17.md) | 竞品研究、优先级、已落地修复及后续范围 |
+| [容器与恢复验收](docs/phase-one-deployment.md) | 隔离容器检查、报告及正式部署剩余条件 |
 | [简历之后 · 短片说明](media/after-the-resume/README.md) | 96 秒动态短片、分镜、字幕、播放器源文件和制作记录 |
 | [离线短片 HTML](简历之后.html) / [WebM 视频（Release 下载）](https://github.com/Nevergoodstudy/AIhrsuperworkstation/releases/download/v1.0.0/after-the-resume.webm) | 下载后在浏览器中观看；GitHub 文件页不直接运行 HTML |
 | [路演视觉素材](output/imagegen/README.md) | 原始图片、1920 × 1080 展示图、提示词和生成记录 |
-| [持续集成](https://github.com/Nevergoodstudy/AIhrsuperworkstation/actions/workflows/ci.yml) | 依赖审计、业务测试、前端构建、浏览器测试和容器构建 |
+| [核心功能 GIF](output/gifs/README.md) / [离线动图预览](output/gifs/index.html) | 真实界面配虚构资料：招聘流程总览、简历证据、候选人测评、人工复核与角色权限 |
+| [持续集成](https://github.com/Nevergoodstudy/AIhrsuperworkstation/actions/workflows/ci.yml) | 依赖审计、业务测试、前端构建、浏览器测试、容器构建及重启备份恢复验收 |
 
 ## 源码目录
 
@@ -38,10 +53,10 @@
 | src/ | 工作台与候选人门户的 React 界面、API 客户端和样式 |
 | server/ | Express API、SQLite 持久化、账号与会话、简历解析、邮件和可选 AI |
 | tests/ | 业务、权限、解析、邮件、备份恢复与浏览器流程测试 |
-| scripts/ | 数据备份、完整性校验与恢复工具 |
+| scripts/ | 数据备份、完整性校验、恢复工具与隔离容器验收 |
 | deploy/、Dockerfile、compose.yaml | Caddy HTTPS 入口、应用镜像与持久化卷配置 |
 | docs/ | 运维和交付验收资料 |
-| media/、output/imagegen/ | 项目短片、视觉素材及其制作说明 |
+| media/、output/imagegen/、output/gifs/ | 项目短片、视觉素材、功能动图及其制作说明 |
 | .github/workflows/ | GitHub Actions 自动化检查 |
 
 较大的 WebM 成片作为 v1.0.0 Release 附件交付；播放器源码、离线 HTML、字幕、分镜和质检记录保存在仓库中。
@@ -160,6 +175,13 @@ npm run test:e2e
 ```
 
 本机已有 Microsoft Edge 时，可用 PLAYWRIGHT_CHANNEL=msedge npm run test:e2e。测试使用隔离临时数据库，不初始化业务数据目录。CI 已配置上述检查及容器构建，只有实际运行成功才算 CI 验证通过。
+
+v1.1.0 本机回归为服务端 **33/33**、Edge 浏览器 **5/5**，构建和依赖审计通过。Docker 环境可执行下列隔离验收；脚本只使用唯一命名的临时容器和卷，报告不替代真实域名、企业 SMTP / AI 与异地恢复验收。
+
+~~~sh
+docker build -t talentdesk:ci .
+node scripts/container-smoke.mjs talentdesk:ci > container-smoke-report.json
+~~~
 
 ```sh
 npm run backup -- /绝对路径/备份根目录

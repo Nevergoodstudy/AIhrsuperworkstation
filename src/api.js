@@ -1,4 +1,4 @@
-export class ApiError extends Error { constructor(message, status) { super(message); this.status = status; } }
+export class ApiError extends Error { constructor(message, status, code) { super(message); this.status = status; this.code = code; } }
 export async function api(path, options = {}) {
   const { body, ...rest } = options;
   let response;
@@ -7,7 +7,7 @@ export async function api(path, options = {}) {
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
     if (response.status === 401 && !path.startsWith('/api/auth') && !path.startsWith('/api/portal')) window.dispatchEvent(new Event('staff-session-expired'));
-    throw new ApiError(result.error || '服务暂时不可用，请稍后重试', response.status);
+    throw new ApiError(result.error || '服务暂时不可用，请稍后重试', response.status, result.code);
   }
   return result;
 }

@@ -10,8 +10,9 @@ import { openDatabase, transaction, json } from './db.mjs';
 import { getConfig } from './config.mjs';
 import { id, now, token, digest, hashPassword, verifyPassword, cookieValue, setCookie, publicUser, audit, fail, limit, redact } from './security.mjs';
 import { extractResume, ruleAnalysis, contactHints } from './resumes.mjs';
-import { analyzeWithAI } from './ai.mjs';
+import { analyzeWithAI, AI_PROMPT_VERSION } from './ai.mjs';
 import { createMailTransport } from './mail.mjs';
+import { applyExamStage, recordStageEvent } from './candidate-stages.mjs';
 const text = (max = 300) => z.string().trim().max(max);
 const required = (max = 300) => text(max).min(1);
 const email = z.string().trim().email().max(254).transform(value => value.toLowerCase());
@@ -41,9 +42,14 @@ export function createApp(overrides = {}) {
   function sweep() {
     const time = now();
     transaction(db, () => {
-      run(`UPDATE exams SET status='expired' WHERE status='invited' AND expires_at <= ?`, time);
-      const due = all(`SELECT id,candidate_id FROM exams WHERE status='in_progress' AND deadline_at <= ?`, time);
-      for (const exam of due) { run(`UPDATE exams SET status='submitted', submitted_at=?, revision=revision+1 WHERE id=?`, time, exam.id); run(`UPDATE candidates SET stage='待复核',version=version+1,updated_at=? WHERE id=? AND stage='测评中'`, time, exam.candidate_id); }
+      for (const exam of all(`SELECT * FROM exams WHERE status='invited' AND expires_at <= ?`, time)) {
+        run(`UPDATE exams SET status='expired',revision=revision+1 WHERE id=?`, exam.id);
+        applyExamStage(db, exam, 'exam.expire', 'system');
+      }
+      for (const exam of all(`SELECT * FROM exams WHERE status='in_progress' AND deadline_at <= ?`, time)) {
+        run(`UPDATE exams SET status='submitted', submitted_at=?, revision=revision+1 WHERE id=?`, time, exam.id);
+        applyExamStage(db, exam, 'exam.timeout', 'system');
+      }
       run('DELETE FROM sessions WHERE expires_at <= ?', time); run('DELETE FROM portal_sessions WHERE expires_at <= ?', time);
     });
     for (const row of all('SELECT file_key FROM file_cleanup LIMIT 20')) {
@@ -79,10 +85,19 @@ export function createApp(overrides = {}) {
     candidateFor(user, exam.candidate_id); return exam;
   }
   function cleanCandidate(candidate, user, detailed = false) {
-    const result = { id: candidate.id, jobId: candidate.job_id, name: candidate.name, stage: candidate.stage, skills: json(candidate.skills, []), analysis: json(candidate.analysis, {}), version: candidate.version, createdAt: candidate.created_at, updatedAt: candidate.updated_at, consentAt: candidate.consent_at };
+    const analysis = analysisView(candidate);
+    const result = { id: candidate.id, jobId: candidate.job_id, name: candidate.name, stage: candidate.stage, skills: analysis.stale ? [] : json(candidate.skills, []), analysis, version: candidate.version, createdAt: candidate.created_at, updatedAt: candidate.updated_at, consentAt: candidate.consent_at };
     if (user.role === 'department') { result.skills = result.skills.map(redact); result.analysis = { ...result.analysis, summary: redact(result.analysis.summary ?? ''), evidence: (result.analysis.evidence ?? []).map(e => ({ ...e, requirement: redact(e.requirement), quote: redact(e.quote) })) }; }
     else Object.assign(result, { email: candidate.email, phone: candidate.phone, fileName: candidate.file_name, hasFile: Boolean(candidate.file_key), ...(detailed ? { resumeText: candidate.resume_text } : {}) });
     return result;
+  }
+  function analysisSource(candidate, job, method, userId) {
+    return { jobId: job.id, jobVersion: job.version, resumeHash: digest(candidate.resume_text), candidateVersion: candidate.version, model: method === 'ai' ? config.aiModel : 'keyword-v1', promptVersion: method === 'ai' ? AI_PROMPT_VERSION : 'keyword-v1', requestedBy: userId };
+  }
+  function analysisView(candidate) {
+    const analysis = json(candidate.analysis, {}), source = analysis.source, job = one('SELECT version FROM jobs WHERE id=?', candidate.job_id);
+    const staleReason = !source ? '历史分析未记录输入版本，请重新分析' : source.jobId !== candidate.job_id || source.jobVersion !== job?.version ? '岗位已更新，请重新分析' : source.resumeHash !== digest(candidate.resume_text) ? '简历已更新，请重新分析' : '';
+    return { ...analysis, stale: Boolean(staleReason), staleReason, ...(analysis.method === 'ai' ? { summaryNeedsReview: true } : {}) };
   }
   function cleanExam(exam) { return { id: exam.id, candidateId: exam.candidate_id, assessmentId: exam.assessment_id, name: exam.name, duration: exam.duration, status: exam.status, expiresAt: exam.expires_at, startedAt: exam.started_at, deadlineAt: exam.deadline_at, submittedAt: exam.submitted_at, feedback: json(exam.feedback), mailStatus: exam.mail_status, createdAt: exam.created_at }; }
   const cleanAssessment = a => ({ id: a.id, jobId: a.job_id, name: a.name, duration: a.duration, questionIds: json(a.question_ids, []), allowAI: Boolean(a.allow_ai), randomize: Boolean(a.randomize), recordSwitch: Boolean(a.record_switch), version: a.version });
@@ -133,7 +148,7 @@ export function createApp(overrides = {}) {
   async function addCandidate(req, res, buffer, filename) {
     const b = candidateSchema.parse(req.body), job = jobFor(req.user, b.jobId);
     if (job.status !== '招聘中') throw fail(409, '该岗位当前不接受新增候选人');
-    const key = id(), fileKey = buffer ? id() : null, time = now(), analysis = ruleAnalysis(b.resumeText, job.requirements);
+    const key = id(), fileKey = buffer ? id() : null, time = now(), analysis = { ...ruleAnalysis(b.resumeText, job.requirements), source: analysisSource({ resume_text: b.resumeText, version: 1 }, job, 'keyword', req.user.id) };
     if (fileKey) await writeFile(path.join(config.dataDir, 'resumes', fileKey), buffer, { mode: 0o600, flag: 'wx' });
     try { run('INSERT INTO candidates(id,job_id,name,email,phone,stage,resume_text,file_key,file_name,skills,analysis,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)', key, b.jobId, b.name, b.email, b.phone, '待筛选', b.resumeText, fileKey, filename ?? null, JSON.stringify(analysis.evidence.filter(e => e.matched).map(e => e.requirement)), JSON.stringify(analysis), time, time); }
     catch (error) { if (fileKey) await unlink(path.join(config.dataDir, 'resumes', fileKey)).catch(() => {}); throw error; }
@@ -150,9 +165,12 @@ export function createApp(overrides = {}) {
   app.get('/api/candidates/:id', staff, (req, res) => res.json(cleanCandidate(candidateFor(req.user, req.params.id), req.user, true)));
   app.put('/api/candidates/:id', staff, hr, (req, res) => {
     const b = z.object({ name: required(100), email: email.or(z.literal('')), phone: text(50), stage: z.enum(stages), version: z.number().int() }).parse(req.body);
-    candidateFor(req.user, req.params.id);
-    if (!run('UPDATE candidates SET name=?,email=?,phone=?,stage=?,version=version+1,updated_at=? WHERE id=? AND version=?', b.name, b.email, b.phone, b.stage, now(), req.params.id, b.version).changes) throw fail(409, '候选人已被其他人修改，请刷新后重试');
-    audit(db, req.user.id, 'candidate.update', req.params.id); res.json({ ok: true });
+    transaction(db, () => {
+      const c = candidateFor(req.user, req.params.id);
+      if (!run('UPDATE candidates SET name=?,email=?,phone=?,stage=?,stage_exam_id=?,version=version+1,updated_at=? WHERE id=? AND version=?', b.name, b.email, b.phone, b.stage, b.stage === c.stage ? c.stage_exam_id : null, now(), c.id, b.version).changes) throw fail(409, '候选人已被其他人修改，请刷新后重试');
+      if (b.stage !== c.stage) recordStageEvent(db, c, b.stage, 'staff.stage', req.user.id, 'HR 在候选人资料中手动调整招聘阶段', c.stage_exam_id);
+      audit(db, req.user.id, 'candidate.update', req.params.id);
+    }); res.json({ ok: true });
   });
   app.get('/api/candidates/:id/resume', staff, hr, (req, res) => {
     const c = candidateFor(req.user, req.params.id);
@@ -168,15 +186,36 @@ export function createApp(overrides = {}) {
   });
   app.post('/api/candidates/:id/analyze', staff, hr, async (req, res) => {
     const b = z.object({ method: z.enum(['keyword', 'ai']), consent: z.boolean().default(false) }).parse(req.body), c = candidateFor(req.user, req.params.id), job = jobFor(req.user, c.job_id);
+    if (b.method === 'ai') {
+      if (!b.consent) throw fail(400, '请先确认已获得向 AI 服务发送简历的授权');
+      limit(db, 'ai:' + req.user.id, 20, 3600000);
+    }
+    const runId = id(), source = { ...analysisSource(c, job, b.method, req.user.id), runId };
+    run(`INSERT INTO analysis_runs(id,candidate_id,job_id,candidate_version,job_version,resume_hash,model,prompt_version,requested_by,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,'running',?)`, runId, c.id, job.id, c.version, job.version, source.resumeHash, source.model, source.promptVersion, req.user.id, now());
     let analysis;
-    if (b.method === 'ai') { if (!b.consent) throw fail(400, '请先确认已获得向 AI 服务发送简历的授权'); limit(db, 'ai:' + req.user.id, 20, 3600000); analysis = await analyzeWithAI(config, c.resume_text, job); }
-    else analysis = ruleAnalysis(c.resume_text, job.requirements);
-    if (!run('UPDATE candidates SET analysis=?,skills=?,version=version+1,updated_at=? WHERE id=? AND version=?', JSON.stringify(analysis), JSON.stringify(analysis.evidence.filter(e => e.matched).map(e => e.requirement)), now(), c.id, c.version).changes) throw fail(409, '候选人资料已变更，分析未保存，请刷新后重试');
-    audit(db, req.user.id, 'candidate.analyze.' + b.method, c.id); res.json({ analysis });
+    try { analysis = { ...(b.method === 'ai' ? await analyzeWithAI(config, c.resume_text, job) : ruleAnalysis(c.resume_text, job.requirements)), source }; }
+    catch (error) { run("UPDATE analysis_runs SET status='failed',reason=?,completed_at=? WHERE id=?", '分析服务或返回证据校验失败', now(), runId); throw error; }
+    const rejection = transaction(db, () => {
+      const actor = currentStaff(req), latest = one('SELECT * FROM candidates WHERE id=?', c.id), latestJob = one('SELECT * FROM jobs WHERE id=?', job.id);
+      let error;
+      if (!actor || actor.id !== req.user.id || !['admin', 'hr'].includes(actor.role) || actor.must_change) error = fail(403, '账号或会话已失效，分析结果未保存，请重新登录');
+      else if (!latest) error = fail(404, '候选人已删除，分析结果未保存');
+      else if (latest.version !== c.version || latest.job_id !== job.id || digest(latest.resume_text) !== source.resumeHash || latestJob?.version !== job.version) error = fail(409, '候选人或岗位已变更，旧分析已作废，请刷新后重试');
+      if (error) {
+        run('UPDATE analysis_runs SET status=?,reason=?,completed_at=? WHERE id=?', error.status === 403 ? 'rejected' : 'superseded', error.message, now(), runId);
+        return error;
+      }
+      run('UPDATE candidates SET analysis=?,skills=?,version=version+1,updated_at=? WHERE id=? AND version=?', JSON.stringify(analysis), JSON.stringify(analysis.evidence.filter(e => e.matched).map(e => e.requirement)), now(), c.id, c.version);
+      run("UPDATE analysis_runs SET status='completed',completed_at=? WHERE id=?", now(), runId);
+      audit(db, actor.id, 'candidate.analyze.' + b.method, c.id);
+      return null;
+    });
+    if (rejection) throw rejection;
+    res.json({ analysis: analysisView(one('SELECT * FROM candidates WHERE id=?', c.id)) });
   });
   app.get('/api/export/candidates', staff, hr, (req, res) => {
     const cells = value => { let v = String(value ?? '').replace(/[\r\n]/g, ' '); if (/^[=+@\-\t]/.test(v.trimStart())) v = String.fromCharCode(39) + v; return String.fromCharCode(34) + v.replaceAll(String.fromCharCode(34), String.fromCharCode(34).repeat(2)) + String.fromCharCode(34); };
-    const rows = [['姓名', '邮箱', '电话', '岗位', '阶段', '关键词或证据覆盖率', '分析方式', '创建时间'], ...all('SELECT c.*,j.title FROM candidates c JOIN jobs j ON j.id=c.job_id ORDER BY c.created_at DESC').map(c => { const a = json(c.analysis, {}); return [c.name, c.email, c.phone, c.title, c.stage, a.score ?? '', a.method, c.created_at]; })];
+    const rows = [['姓名', '邮箱', '电话', '岗位', '阶段', '关键词或证据覆盖率', '分析方式', '分析状态', '创建时间'], ...all('SELECT c.*,j.title FROM candidates c JOIN jobs j ON j.id=c.job_id ORDER BY c.created_at DESC').map(c => { const a = analysisView(c); return [c.name, c.email, c.phone, c.title, c.stage, a.stale ? '' : a.score ?? '', a.method, a.stale ? a.staleReason : '当前版本', c.created_at]; })];
     audit(db, req.user.id, 'candidate.export', 'workspace'); res.attachment('candidates.csv').type('text/csv; charset=utf-8').send('\uFEFF' + rows.map(row => row.map(cells).join(',')).join('\r\n'));
   });
   app.post('/api/questions', staff, hr, (req, res) => {
@@ -225,7 +264,8 @@ export function createApp(overrides = {}) {
     const key = id(), raw = token(), time = now(), expires = new Date(Date.now() + b.validDays * 86400000).toISOString();
     transaction(db, () => {
       run('INSERT INTO exams(id,candidate_id,assessment_id,name,questions,duration,allow_ai,record_switch,token_hash,status,expires_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', key, candidate.id, assessment.id, assessment.name, JSON.stringify(questions.map(q => ({ id: q.id, title: q.title, competency: q.competency, type: q.type, minutes: q.minutes, rubric: q.rubric }))), assessment.duration, assessment.allow_ai, assessment.record_switch, digest(raw), 'invited', expires, time);
-      run(`UPDATE candidates SET stage='待测评',version=version+1,updated_at=? WHERE id=?`, time, candidate.id); audit(db, req.user.id, 'exam.invite', key);
+      run('UPDATE exams SET prior_stage=? WHERE id=?', candidate.stage, key);
+      applyExamStage(db, one('SELECT * FROM exams WHERE id=?', key), 'exam.invite', req.user.id); audit(db, req.user.id, 'exam.invite', key);
     });
     let mailStatus = 'not_sent', mailError = '';
     if (b.sendEmail) { try { mailStatus = await deliverInvitation(one('SELECT * FROM exams WHERE id=?', key), candidate, raw); } catch (error) { mailStatus = 'failed'; mailError = error.message; run(`UPDATE exams SET mail_status='failed' WHERE id=?`, key); } }
@@ -240,7 +280,7 @@ export function createApp(overrides = {}) {
   app.post('/api/exams/:id/revoke', staff, hr, (req, res) => {
     const exam = examFor(req.user, req.params.id);
     if (!['invited', 'in_progress'].includes(exam.status)) throw fail(409, '只有待开始和进行中的测评可以撤销');
-    transaction(db, () => { run(`UPDATE exams SET status='revoked',revision=revision+1 WHERE id=?`, exam.id); run('DELETE FROM portal_sessions WHERE exam_id=?', exam.id); audit(db, req.user.id, 'exam.revoke', exam.id); }); res.json({ ok: true });
+    transaction(db, () => { run(`UPDATE exams SET status='revoked',revision=revision+1 WHERE id=?`, exam.id); run('DELETE FROM portal_sessions WHERE exam_id=?', exam.id); applyExamStage(db, exam, 'exam.revoke', req.user.id); audit(db, req.user.id, 'exam.revoke', exam.id); }); res.json({ ok: true });
   });
   app.get('/api/exams/:id', staff, (req, res) => {
     const exam = examFor(req.user, req.params.id);
@@ -305,6 +345,8 @@ export function createApp(overrides = {}) {
     sweep(); const raw = cookieValue(req, 'td_portal');
     req.exam = raw ? one('SELECT e.* FROM exams e JOIN portal_sessions s ON s.exam_id=e.id WHERE s.hash=? AND s.expires_at>?', digest(raw), now()) : null;
     if (!req.exam || ['revoked', 'expired'].includes(req.exam.status)) return next(fail(401, '测评会话已失效，请使用有效邀请链接进入'));
+    const expected = z.string().uuid().parse(req.get('X-Exam-Id'));
+    if (expected !== req.exam.id) return next(Object.assign(fail(409, '此浏览器已切换到另一份测评。当前草稿已保留，请下载副本并使用本次邀请重新进入。'), { code: 'PORTAL_CONTEXT_MISMATCH' }));
     next();
   };
   app.post('/api/portal/redeem', (req, res) => {
@@ -315,14 +357,14 @@ export function createApp(overrides = {}) {
     setCookie(res, config, 'td_portal', raw, 7 * 86400000, '/api/portal'); res.json(portalView(exam));
   });
   app.get('/api/portal/me', portal, (req, res) => res.json(portalView(req.exam)));
-  app.post('/api/portal/logout', (req, res) => { run('DELETE FROM portal_sessions WHERE hash=?', digest(cookieValue(req, 'td_portal'))); setCookie(res, config, 'td_portal', '', 0, '/api/portal'); res.json({ ok: true }); });
+  app.post('/api/portal/logout', portal, (req, res) => { run('DELETE FROM portal_sessions WHERE hash=?', digest(cookieValue(req, 'td_portal'))); setCookie(res, config, 'td_portal', '', 0, '/api/portal'); res.json({ ok: true }); });
   app.post('/api/portal/start', portal, (req, res) => {
     z.object({ consent: z.literal(true) }).parse(req.body);
     if (req.exam.status !== 'invited') throw fail(409, '测评已经开始或已经结束，请刷新');
     const time = now(), deadline = new Date(Date.now() + req.exam.duration * 60000).toISOString();
     transaction(db, () => {
       run(`UPDATE exams SET status='in_progress',started_at=?,deadline_at=?,consent_at=? WHERE id=? AND status='invited'`, time, deadline, time, req.exam.id);
-      run(`UPDATE candidates SET stage='测评中',version=version+1,updated_at=? WHERE id=?`, time, req.exam.candidate_id); audit(db, 'candidate', 'exam.start', req.exam.id);
+      applyExamStage(db, req.exam, 'exam.start', 'candidate'); audit(db, 'candidate', 'exam.start', req.exam.id);
     }); res.json(portalView(one('SELECT * FROM exams WHERE id=?', req.exam.id)));
   });
   function saveAnswers(req, submit) {
@@ -333,7 +375,7 @@ export function createApp(overrides = {}) {
     transaction(db, () => {
       const changed = run('UPDATE exams SET answers=?,revision=revision+1,status=?,submitted_at=?,used_ai=? WHERE id=? AND revision=? AND status=?', JSON.stringify(b.answers), submit ? 'submitted' : 'in_progress', submit ? now() : null, b.usedAI === undefined ? exam.used_ai : +b.usedAI, exam.id, b.revision, 'in_progress');
       if (!changed.changes) throw fail(409, '另一窗口已保存新版本，请先复制当前答案再刷新，避免覆盖');
-      if (submit) { run(`UPDATE candidates SET stage='待复核',version=version+1,updated_at=? WHERE id=?`, now(), exam.candidate_id); audit(db, 'candidate', 'exam.submit', exam.id); }
+      if (submit) { applyExamStage(db, exam, 'exam.submit', 'candidate'); audit(db, 'candidate', 'exam.submit', exam.id); }
     }); return portalView(one('SELECT * FROM exams WHERE id=?', exam.id));
   }
   app.put('/api/portal/answers', portal, (req, res) => res.json(saveAnswers(req, false)));
@@ -356,7 +398,7 @@ export function createApp(overrides = {}) {
     if (error.type === 'entity.parse.failed') return res.status(400).json({ error: '请求内容不是有效 JSON' });
     const status = error.status >= 400 && error.status <= 599 ? error.status : 500;
     if (status === 500) console.error('request_failed', req.method, req.route?.path ?? 'unknown', error.code ?? error.name);
-    res.status(status).json({ error: status === 500 ? '服务暂时无法完成请求，请重试或联系管理员' : error.message });
+    res.status(status).json({ error: status === 500 ? '服务暂时无法完成请求，请重试或联系管理员' : error.message, ...(error.code === 'PORTAL_CONTEXT_MISMATCH' ? { code: error.code } : {}) });
   });
   return { app, db, config, sweep, close: () => db.close() };
 }

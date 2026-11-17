@@ -37,6 +37,16 @@ export function openDatabase(dataDir) {
     if (!db.prepare('PRAGMA table_info(' + table + ')').all().some(column => column.name === 'version')) db.exec('ALTER TABLE ' + table + ' ADD COLUMN version INTEGER NOT NULL DEFAULT 1');
   }
   db.exec("INSERT OR IGNORE INTO migrations VALUES(3, strftime('%Y-%m-%dT%H:%M:%fZ','now'))");
+  transaction(db, () => {
+    if (!db.prepare('PRAGMA table_info(candidates)').all().some(c => c.name === 'stage_exam_id')) db.exec('ALTER TABLE candidates ADD COLUMN stage_exam_id TEXT');
+    if (!db.prepare('PRAGMA table_info(exams)').all().some(c => c.name === 'prior_stage')) db.exec('ALTER TABLE exams ADD COLUMN prior_stage TEXT');
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS candidate_events(id TEXT PRIMARY KEY, candidate_id TEXT NOT NULL REFERENCES candidates(id) ON DELETE CASCADE, exam_id TEXT, from_stage TEXT NOT NULL, to_stage TEXT NOT NULL, source TEXT NOT NULL, actor_id TEXT NOT NULL, reason TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS candidate_events_candidate ON candidate_events(candidate_id, created_at);
+      CREATE TABLE IF NOT EXISTS analysis_runs(id TEXT PRIMARY KEY, candidate_id TEXT NOT NULL REFERENCES candidates(id) ON DELETE CASCADE, job_id TEXT NOT NULL, candidate_version INTEGER NOT NULL, job_version INTEGER NOT NULL, resume_hash TEXT NOT NULL, model TEXT NOT NULL, prompt_version TEXT NOT NULL, requested_by TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('running','completed','superseded','rejected','failed')), reason TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, completed_at TEXT);
+      INSERT OR IGNORE INTO migrations VALUES(4, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+    `);
+  });
   return db;
 }
 export function transaction(db, fn) { db.exec('BEGIN IMMEDIATE'); try { const result = fn(); db.exec('COMMIT'); return result; } catch (error) { db.exec('ROLLBACK'); throw error; } }

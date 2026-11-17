@@ -39,11 +39,13 @@ test('真实服务进程重启后，账号会话、简历原件和已保存答�
     assert.equal((await fetch(base + '/api/ready')).status, 200);
   }
   function client() {
-    const cookies = new Map();
+    const cookies = new Map(); let examId;
     return { async call(route, method = 'GET', body) {
-      const response = await fetch(base + route, { method, headers: { Origin: origin, 'X-Requested-With': 'TalentDesk', Cookie: [...cookies].map(([key, value]) => key + '=' + value).join('; '), ...(body && !(body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}) }, body: body instanceof FormData ? body : body === undefined ? undefined : JSON.stringify(body) });
+      const response = await fetch(base + route, { method, headers: { Origin: origin, 'X-Requested-With': 'TalentDesk', ...(examId && route.startsWith('/api/portal/') && route !== '/api/portal/redeem' ? { 'X-Exam-Id': examId } : {}), Cookie: [...cookies].map(([key, value]) => key + '=' + value).join('; '), ...(body && !(body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}) }, body: body instanceof FormData ? body : body === undefined ? undefined : JSON.stringify(body) });
       for (const cookie of response.headers.getSetCookie()) { const pair = cookie.split(';')[0], split = pair.indexOf('='); cookies.set(pair.slice(0, split), pair.slice(split + 1)); }
-      return { status: response.status, body: response.headers.get('content-type')?.includes('json') ? await response.json() : await response.text(), headers: response.headers };
+      const value = response.headers.get('content-type')?.includes('json') ? await response.json() : await response.text();
+      if (route === '/api/portal/redeem' && response.ok) examId = value.id;
+      return { status: response.status, body: value, headers: response.headers };
     } };
   }
   await start();
@@ -60,8 +62,17 @@ test('真实服务进程重启后，账号会话、简历原件和已保存答�
   const started = await portal.call('/api/portal/start', 'POST', { consent: true });
   const answers = { [business.questionId]: '重启前保存的订单幂等与事务方案。' };
   assert.equal((await portal.call('/api/portal/answers', 'PUT', { revision: 0, answers, usedAI: false })).status, 200);
+  const ledger = openDatabase(dataDir);
+  const runId = id();
+  ledger.prepare("INSERT INTO analysis_runs(id,candidate_id,job_id,candidate_version,job_version,resume_hash,model,prompt_version,requested_by,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,'running',?)").run(runId, business.candidateId, business.jobId, 3, 1, 'synthetic-hash', 'test-model', 'test-prompt', 'test-actor', now());
+  // Other database users (for example an admin CLI) must not interrupt live requests.
+  const reader = openDatabase(dataDir);
+  assert.equal(reader.prepare('SELECT status FROM analysis_runs WHERE id=?').get(runId).status, 'running'); reader.close(); ledger.close();
   await stop();
   await start();
+  const recoveredLedger = openDatabase(dataDir);
+  const interrupted = recoveredLedger.prepare('SELECT * FROM analysis_runs WHERE id=?').get(runId);
+  assert.equal(interrupted.status, 'failed'); assert.match(interrupted.reason, /进程中断/); assert.ok(interrupted.completed_at); recoveredLedger.close();
   assert.equal((await hr.call('/api/auth/me')).body.user.email, 'restart@example.test');
   const workspace = await hr.call('/api/workspace');
   assert.equal(workspace.status, 200);

@@ -1,6 +1,6 @@
 # TalentDesk 交付验收记录
 
-记录日期：2026-11-15。适用版本：当前工作区源代码及 package-lock.json，单企业、单应用实例、SQLite 与服务端私有原件存储。
+记录日期：2026-11-17（Asia/Shanghai）。适用版本：v1.1.0 第一阶段改进源代码及 package-lock.json，单企业、单应用实例、SQLite 与服务端私有原件存储。v1.0.0 初始交付及其历史 CI 记录保留。
 
 当前结论：核心招聘流程已实现，本机自动化回归通过，可以进入正式环境部署与业务验收。正式服务器尚未部署验收，不能据此认定已经上线、达到特定并发容量或满足企业全部合规要求。不以页面数量或未经定义的百分比衡量完成度。
 
@@ -10,11 +10,12 @@
 
 | 检查 | 命令 | 结果与证据范围 |
 | --- | --- | --- |
-| 服务端业务与持久化 | `npm test` | 14/14 通过：业务 7 项、备份 1 项、SMTP 2 项、解析与 AI 3 项、真实进程重启 1 项 |
-| 浏览器完整流程 | `PLAYWRIGHT_CHANNEL=msedge npm run test:e2e` | 2/2 通过；使用本机 Microsoft Edge / Chromium，约 7 秒，覆盖三个独立浏览器身份和管理员建号改密 |
-| 生产前端构建 | 浏览器测试的 webServer 先运行 `npm run build` | 构建成功后启动测试服务，随后完成上述两条浏览器流程 |
+| 服务端业务与持久化 | `npm test` | **33/33 通过**：原有 14 项继续通过；新增 4 项门户与阶段一致性、13 项分析一致性和 2 项真实 v3 迁移恢复回归，0 失败或跳过 |
+| 浏览器完整流程 | `PLAYWRIGHT_CHANNEL=msedge npm run test:e2e` | **5/5 通过**；使用本机 Microsoft Edge / Chromium，覆盖三角色闭环、管理员改密、多邀请草稿保护、过期分析及保存失败退出 |
+| 生产前端构建 | `npm run build`，浏览器测试前也重新构建 | **通过**，Vite 生产构建成功，浏览器流程使用构建后的应用 |
 | 依赖已知漏洞 | `npm audit --audit-level=high` | 输出 `found 0 vulnerabilities`；仅代表本次注册表审计结果，不等于全面安全审计 |
-| GitHub Actions 远端持续集成 | [2026-11-15 运行记录](https://github.com/Nevergoodstudy/AIhrsuperworkstation/actions/runs/43680605194)，提交 17df779 | 全部通过：Ubuntu / Node.js 24 依赖安装与审计、服务端测试、前端构建、Chromium 浏览器测试、Compose 配置校验和 Docker 镜像构建；不包含正式环境部署验收 |
+| v1.1.0 远端持续集成与容器恢复 | 推送后实际执行 GitHub Actions 并下载容器 JSON 报告 | 正在发布前核验；本机没有 Docker CLI，不把脚本存在视为容器验收通过 |
+| v1.0.0 历史远端持续集成 | [2026-11-15 运行记录](https://github.com/Nevergoodstudy/AIhrsuperworkstation/actions/runs/43680605194)，提交 17df779 | 通过：Ubuntu / Node.js 24 依赖安装与审计、原有 14 项服务端和 2 项浏览器测试、构建、Compose 配置校验和 Docker 镜像构建；不是本轮改进的验收证据 |
 
 自动化测试来源：
 
@@ -23,6 +24,10 @@
 - [真实进程重启](../tests/persistence.test.mjs)：启动独立服务进程、落盘、SIGTERM 正常退出、同目录重启；员工会话、私有原件、作答截止时间和已保存答案可继续使用，重启后能够提交。
 - [邮件协议](../tests/mail.test.mjs)：本地真实 SMTP 会话返回 accepted；生产配置下若服务不支持 TLS，则不发送认证、发件人、收件人或邮件正文。没有接入正式企业邮箱，不证明收件箱送达。
 - [文件解析与 AI 证据约束](../tests/parsing-ai.test.mjs)：UTF-8 TXT、DOCX、PDF 及伪装文件；关键词覆盖和原文定位；受控 HTTP 响应下仅接受岗位要求与连续原文证据。未验证外部模型服务。
+- [门户与人工阶段一致性](../tests/consistency-portal.test.mjs)：同浏览器多邀请上下文拒绝、邀请前阶段恢复、重复 sweep 幂等及人工决定保护。
+- [分析一致性](../tests/consistency-ai.test.mjs)：写回时重新鉴权，验证账号与会话失效、输入漂移、并发结果、删除及过期分析展示和 CSV。
+- [真实旧库迁移](../tests/migration.test.mjs)：冻结的完整 v3 schema 迁移至 v4、重复打开幂等、数据完整性，以及旧库备份恢复后启动和会话失效。
+- [隔离容器验收](../scripts/container-smoke.mjs)：非 root 与卷权限、真实 HTTP、容器重启、在线备份和新卷恢复；实际执行结果与证据见 [部署记录](phase-one-deployment.md)。
 - [浏览器验收](../tests/e2e/workflow.spec.js)：HR、候选人、部门独立上下文；真实表单操作；自动保存后刷新；人工复核与反馈可见性；90 行长答卷生成多页 PDF 并逐行核验末尾、评分要点和复核记录；390 px 宽候选人反馈与登录布局无横向溢出；流程未触发页面脚本异常。
 
 开发过程还完成过交互式终端的管理员创建和重置检查：密码输入不回显，重置后原密码与旧会话失效，首次登录需改密。本次自动化回归未重复人工终端检查；正式部署仍需按下表建立实际管理员。
@@ -45,7 +50,7 @@
 
 ## 尚未验证或不在本版范围内
 
-- 当前开发机没有 Docker。镜像构建和 Compose 配置校验已在上述远端 CI 通过；容器实际启动、数据卷权限、Caddy / HTTPS 证书和容器恢复仍待正式或与正式配置一致的环境实跑。
+- 当前开发机没有 Docker。本轮镜像构建、Compose 配置和隔离容器恢复结果将在远端 CI 实跑后补充；完整 Caddy / HTTPS 与正式配置下的部署恢复仍待服务器验收。
 - 未完成真实域名和服务器的 HTTPS、Secure Cookie、代理来源、限速与外部网络验收。
 - 没有正式 SMTP 收件箱送达记录。accepted 只表示发送服务接受；需要检查收件箱、垃圾箱、退信与服务商投递记录。
 - 没有外部 AI 服务验收记录。未配置时人工招聘流程仍可使用；启用前需要企业确认候选人授权、传输范围与服务商配置。

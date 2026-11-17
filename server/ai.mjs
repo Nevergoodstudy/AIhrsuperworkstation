@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { fail, now } from './security.mjs';
 const resultSchema = z.object({ summary: z.string().min(1).max(3000), evidence: z.array(z.object({ requirement: z.string().max(300), quote: z.string().min(1).max(3000) })).max(50) });
+export const AI_PROMPT_VERSION = 'resume-evidence-v1';
 export async function analyzeWithAI(config, text, job) {
   if (!config.aiKey || !config.aiModel) throw fail(503, '尚未配置 AI 服务，仍可使用关键词覆盖分析');
   if (text.length > 80000) throw fail(422, 'AI 分析最多接受 8 万字，请缩短简历');
@@ -28,6 +29,6 @@ export async function analyzeWithAI(config, text, job) {
       if (!job.requirements.includes(item.requirement) || !text.includes(item.quote) || seen.has(item.requirement)) throw new Error('invalid evidence');
       seen.add(item.requirement);
     }
-    return { method: 'ai', label: 'AI 证据覆盖（仅辅助筛选）', model: config.aiModel, summary: parsed.summary, evidence: job.requirements.map(requirement => ({ requirement, quote: parsed.evidence.find(item => item.requirement === requirement)?.quote ?? '', matched: seen.has(requirement) })), score: job.requirements.length ? Math.round(seen.size / job.requirements.length * 100) : null, analyzedAt: now() };
+    return { method: 'ai', label: 'AI 证据覆盖（仅辅助筛选）', model: config.aiModel, summary: parsed.summary, summaryNeedsReview: true, evidence: job.requirements.map(requirement => ({ requirement, quote: parsed.evidence.find(item => item.requirement === requirement)?.quote ?? '', matched: seen.has(requirement) })), score: job.requirements.length ? Math.round(seen.size / job.requirements.length * 100) : null, analyzedAt: now() };
   } catch { throw fail(502, 'AI 返回的结构或原文证据未通过校验，本次分析未保存'); }
 }

@@ -1,0 +1,85 @@
+{
+  "project": "TalentDesk",
+  "createdAt": "2026-11-16T09:49:25.051Z",
+  "method": "真实应用关键状态截图，叠加标题、标注、光标运动和转场；展示节奏经过剪辑，并非未经剪辑的连续屏幕录制。",
+  "demoData": "全部资料、账号、答卷和评分均为虚构演示；使用隔离临时数据库；未调用外部 AI 或发送邮件。",
+  "assertions": [
+    "关键词覆盖为 75%，原文证据及未命中项均可见；覆盖率不是录用分。",
+    "作答自动保存成功，刷新后完整答案与保存前一致。",
+    "部门逐题人工评分 4/5；HR 发布后候选人可见 80/100 与公开反馈，内部评语不可见。",
+    "技术部列表不含产品部候选人；部门详情接口不返回联系方式或完整简历；原件接口返回 403。",
+    "真实浏览器流程无页面脚本错误；外部 AI 和 SMTP 已禁用；临时数据库与业务库隔离。"
+  ],
+  "files": [
+    {
+      "file": "talentdesk-overview.gif",
+      "title": "TalentDesk 核心功能总览",
+      "width": 1280,
+      "height": 900,
+      "fps": 12,
+      "frames": 332,
+      "durationSeconds": 27.67,
+      "bytes": 4284290,
+      "loop": 0,
+      "poster": "talentdesk-overview-poster.png"
+    },
+    {
+      "file": "talentdesk-overview-compact.gif",
+      "title": "核心功能总览 · 轻量版",
+      "width": 960,
+      "height": 675,
+      "fps": 8,
+      "bytes": 2157450,
+      "loop": 0,
+      "poster": "talentdesk-overview-poster.png"
+    },
+    {
+      "file": "01-resume-evidence.gif",
+      "title": "岗位与简历原文证据",
+      "width": 1280,
+      "height": 900,
+      "fps": 12,
+      "frames": 126,
+      "durationSeconds": 10.5,
+      "bytes": 1589719,
+      "loop": 0,
+      "poster": "01-resume-evidence-poster.png"
+    },
+    {
+      "file": "02-candidate-assessment.gif",
+      "title": "候选人测评与自动保存",
+      "width": 1280,
+      "height": 900,
+      "fps": 12,
+      "frames": 180,
+      "durationSeconds": 15,
+      "bytes": 1441751,
+      "loop": 0,
+      "poster": "02-candidate-assessment-poster.png"
+    },
+    {
+      "file": "03-human-review-feedback.gif",
+      "title": "人工复核与反馈发布",
+      "width": 1280,
+      "height": 900,
+      "fps": 12,
+      "frames": 126,
+      "durationSeconds": 10.5,
+      "bytes": 1141777,
+      "loop": 0,
+      "poster": "03-human-review-feedback-poster.png"
+    },
+    {
+      "file": "04-roles-privacy.gif",
+      "title": "角色权限与操作审计",
+      "width": 1280,
+      "height": 900,
+      "fps": 12,
+      "frames": 141,
+      "durationSeconds": 11.75,
+      "bytes": 1571203,
+      "loop": 0,
+      "poster": "04-roles-privacy-poster.png"
+    }
+  ]
+}
