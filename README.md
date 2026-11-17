@@ -7,7 +7,7 @@
 
 面向单企业 HR 和用人部门的招聘应用，覆盖岗位、简历、测评邀请、候选人独立作答、人工复核和反馈发布。React 前端通过 Express API 访问 SQLite，简历原件保存在服务端私有目录。新环境从空库启动，没有默认账号、演示候选人或前端身份切换。
 
-本版本采用单应用实例和本地持久化磁盘。已完成本机业务与恢复验证；正式服务器、HTTPS、企业邮件和可选 AI 服务需要按 [验收清单](docs/acceptance.md) 完成部署验收，不能把本地测试通过视为已经上线。
+本版本采用单应用实例和本地持久化磁盘。已完成本机业务回归及远端 CI 的隔离容器重启、备份与新卷恢复验证；正式服务器、HTTPS、企业邮件和可选 AI 服务需要按 [验收清单](docs/acceptance.md) 完成部署验收，不能把自动化测试通过视为已经上线。
 
 ## 项目速览
 
@@ -176,7 +176,7 @@ npm run test:e2e
 
 本机已有 Microsoft Edge 时，可用 PLAYWRIGHT_CHANNEL=msedge npm run test:e2e。测试使用隔离临时数据库，不初始化业务数据目录。CI 已配置上述检查及容器构建，只有实际运行成功才算 CI 验证通过。
 
-v1.1.0 本机回归为服务端 **33/33**、Edge 浏览器 **5/5**，构建和依赖审计通过。Docker 环境可执行下列隔离验收；脚本只使用唯一命名的临时容器和卷，报告不替代真实域名、企业 SMTP / AI 与异地恢复验收。
+v1.1.0 本机回归为服务端 **33/33**、Edge 浏览器 **5/5**，构建和依赖审计通过。[远端 Actions](https://github.com/Nevergoodstudy/AIhrsuperworkstation/actions/runs/44018184969) 同样全部通过，包含 Compose 配置、镜像构建和隔离容器重启、备份与新卷恢复；[容器 JSON 报告](docs/verification/v1.1.0-container-smoke.json) 已保存在仓库。Docker 环境可执行下列隔离验收；脚本只使用唯一命名的临时容器和卷，报告不替代真实域名、企业 SMTP / AI 与异地恢复验收。
 
 ~~~sh
 docker build -t talentdesk:ci .

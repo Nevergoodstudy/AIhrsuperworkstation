@@ -1,8 +1,8 @@
 # 第一阶段实施与验证记录
 
-完成日期：2026-11-17（Asia/Shanghai）。对应 [改进策略](improvement-strategy-2026-11-16.md) 的工作包 A 和工作包 B 的自动化准备。
+完成日期：2026-11-17（Asia/Shanghai）。对应 [改进策略](improvement-strategy-2026-11-16.md) 的工作包 A 和工作包 B 的隔离容器验收；正式服务器签收仍待实际执行。
 
-**结论：F1 / F2 / F3 的代码修复、本地回归、旧库迁移和本地备份恢复验证已完成；容器验收自动化已交付，正式服务器仍待签收。** 本机没有 Docker CLI，不能将脚本或 CI 配置视为部署成功。未修改真实业务数据，未部署生产。
+**结论：F1 / F2 / F3 的代码修复、本地回归、旧库迁移、本地备份恢复及远端隔离容器恢复验收均已完成，正式服务器仍待签收。** 本机没有 Docker CLI，容器结果来自实际通过的 Ubuntu CI 与下载核验的报告，不能视为正式部署成功。未修改真实业务数据，未部署生产。
 
 本记录在实施完成后随 v1.1.0 同步到 GitHub。仓库已有 2026-11-15 的 v1.0.0 初始交付版本，本次保留其标签与视频附件。版本内容和后续远端验证状态以 [发布说明](releases/v1.1.0.md) 及对应 Actions 记录为准。
 
@@ -47,7 +47,7 @@
 | `git diff --check` | **通过** |
 | `node --check server/index.mjs`、`node --check scripts/container-smoke.mjs` | **通过** |
 | `node scripts/container-smoke.mjs talentdesk:ci` | **未完成容器验收**：退出 1，JSON 明确报告 Docker CLI unavailable，checks 为空，没有创建容器或卷 |
-| 远端 GitHub Actions | 本轮未触发，不能宣称新容器检查已通过 |
+| 远端 GitHub Actions | [44018184969](https://github.com/Nevergoodstudy/AIhrsuperworkstation/actions/runs/44018184969) **全部通过**：代码基线 1509f12，含 Compose、镜像和真实隔离容器重启、备份、新卷恢复；[JSON](verification/v1.1.0-container-smoke.json) 为 passed，无清理失败 |
 
 修复前已运行新增的 4 项 F1 / F2 测试和 13 项 F3 测试，分别 4 / 4、13 / 13 失败，捕获了原始问题；修复后全部通过。另新增 2 项旧库迁移测试，共新增 19 项后端回归。既有重启测试补充了中断分析恢复，既有招聘闭环、权限、计时、邮件、解析、备份及持久化测试均继续通过。
 
@@ -70,9 +70,8 @@
 
 ## 部署签收剩余条件
 
-执行说明见 [第一阶段部署验收](phase-one-deployment.md)。当前仍缺 Docker 运行环境、隔离服务器、真实域名及企业测试配置，以下项目尚无实际签收证据：
+执行说明及已通过的远端容器证据见 [第一阶段部署验收](phase-one-deployment.md)。CI 的隔离 Docker 环境已完成实际验收；当前仍缺正式或同等配置的隔离服务器、真实域名及企业测试配置，以下项目尚无实际签收证据：
 
-- CI / 隔离环境真正运行新容器检查，保存镜像 ID 和成功 JSON 报告。
 - 完整 Compose / Caddy、真实 HTTPS、浏览器 Secure Cookie、外网作答。
 - 企业 SMTP 的收件与退信；经授权的外部 AI 实际请求。
 - 异地备份取回、新卷恢复及兼容旧版回滚；记录实际恢复耗时和数据损失窗口。

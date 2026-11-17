@@ -14,7 +14,7 @@
 | 浏览器完整流程 | `PLAYWRIGHT_CHANNEL=msedge npm run test:e2e` | **5/5 通过**；使用本机 Microsoft Edge / Chromium，覆盖三角色闭环、管理员改密、多邀请草稿保护、过期分析及保存失败退出 |
 | 生产前端构建 | `npm run build`，浏览器测试前也重新构建 | **通过**，Vite 生产构建成功，浏览器流程使用构建后的应用 |
 | 依赖已知漏洞 | `npm audit --audit-level=high` | 输出 `found 0 vulnerabilities`；仅代表本次注册表审计结果，不等于全面安全审计 |
-| v1.1.0 远端持续集成与容器恢复 | 推送后实际执行 GitHub Actions 并下载容器 JSON 报告 | 正在发布前核验；本机没有 Docker CLI，不把脚本存在视为容器验收通过 |
+| v1.1.0 远端持续集成与容器恢复 | [2026-11-17 运行记录](https://github.com/Nevergoodstudy/AIhrsuperworkstation/actions/runs/44018184969)，代码基线 1509f12；[原始报告](verification/v1.1.0-container-smoke.json) | **全部通过**：33 项服务端、5 项 Chromium 流程、构建、审计、Compose、镜像及真实隔离容器的重启、原件、在线备份、新卷恢复与会话失效；报告 status 为 passed，无清理失败 |
 | v1.0.0 历史远端持续集成 | [2026-11-15 运行记录](https://github.com/Nevergoodstudy/AIhrsuperworkstation/actions/runs/43680605194)，提交 17df779 | 通过：Ubuntu / Node.js 24 依赖安装与审计、原有 14 项服务端和 2 项浏览器测试、构建、Compose 配置校验和 Docker 镜像构建；不是本轮改进的验收证据 |
 
 自动化测试来源：
@@ -50,7 +50,7 @@
 
 ## 尚未验证或不在本版范围内
 
-- 当前开发机没有 Docker。本轮镜像构建、Compose 配置和隔离容器恢复结果将在远端 CI 实跑后补充；完整 Caddy / HTTPS 与正式配置下的部署恢复仍待服务器验收。
+- 当前开发机没有 Docker。本轮镜像构建、Compose 配置及隔离容器恢复已在上述远端 CI 实跑通过；完整 Caddy / HTTPS、正式配置和异地副本的恢复仍待服务器验收。
 - 未完成真实域名和服务器的 HTTPS、Secure Cookie、代理来源、限速与外部网络验收。
 - 没有正式 SMTP 收件箱送达记录。accepted 只表示发送服务接受；需要检查收件箱、垃圾箱、退信与服务商投递记录。
 - 没有外部 AI 服务验收记录。未配置时人工招聘流程仍可使用；启用前需要企业确认候选人授权、传输范围与服务商配置。

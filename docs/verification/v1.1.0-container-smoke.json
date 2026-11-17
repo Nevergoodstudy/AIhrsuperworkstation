@@ -1,0 +1,16 @@
+{
+  "image": "talentdesk:ci",
+  "startedAt": "2026-11-17T04:36:48.164Z",
+  "checks": [
+    "non-root/read-only container, health/ready, private disk permissions, synthetic HTTP workflow",
+    "restart preserved answers, staff/portal sessions and original resume",
+    "online snapshot verified; new volume restored; original bytes and snapshot state verified; old sessions rejected; fresh login/redeem worked; existing restore target rejected"
+  ],
+  "imageId": "sha256:29de94b85c8d32140f4d5d99abaf9faec64854dd26152f116534f52bafbf77c0",
+  "endpoints": {
+    "initial": "http://127.0.0.1:32768",
+    "afterRestart": "http://127.0.0.1:32769"
+  },
+  "status": "passed",
+  "elapsedSeconds": 5.5
+}
