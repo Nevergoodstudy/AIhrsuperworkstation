@@ -358,6 +358,11 @@ export function createApp(overrides = {}) {
   });
   app.get('/api/portal/me', portal, (req, res) => res.json(portalView(req.exam)));
   app.post('/api/portal/logout', portal, (req, res) => { run('DELETE FROM portal_sessions WHERE hash=?', digest(cookieValue(req, 'td_portal'))); setCookie(res, config, 'td_portal', '', 0, '/api/portal'); res.json({ ok: true }); });
+  app.post('/api/portal/practice', portal, (req, res) => {
+    if (req.exam.status !== 'invited') throw fail(409, '请刷新查看当前测评状态。试答仅在正式开始前开放。');
+    z.object({ answer: required(200) }).parse(req.body);
+    res.json({ id: req.exam.id });
+  });
   app.post('/api/portal/start', portal, (req, res) => {
     z.object({ consent: z.literal(true) }).parse(req.body);
     if (req.exam.status !== 'invited') throw fail(409, '测评已经开始或已经结束，请刷新');
@@ -389,7 +394,10 @@ export function createApp(overrides = {}) {
   });
   app.use('/api', (req, res, next) => next(fail(404, '接口不存在')));
   const dist = path.resolve('dist');
-  if (existsSync(path.join(dist, 'index.html'))) { app.use(express.static(dist, { index: false, maxAge: config.env === 'production' ? '1h' : 0 })); app.get('/{*path}', (req, res) => res.sendFile(path.join(dist, 'index.html'))); }
+  if (existsSync(path.join(dist, 'index.html'))) {
+    app.use(express.static(dist, { index: false, maxAge: config.env === 'production' ? '1h' : 0 }));
+    app.get('/{*path}', (req, res) => res.sendFile('index.html', { root: dist }));
+  }
   app.use((error, req, res, next) => {
     if (res.headersSent) return next(error);
     if (error instanceof ZodError) return res.status(400).json({ error: '输入格式不正确，请检查必填项、长度和数值范围', fields: error.issues.map(i => i.path.join('.')).slice(0, 10) });

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Clock3, CheckCircle2, Sprout, Save, Download, LogOut } from 'lucide-react';
+import { Clock3, CheckCircle2, Sprout, Save, Download, LogOut, Send } from 'lucide-react';
 import { api, ApiError, date } from './api';
 import { Button, ErrorBox, Loading, Panel, Field } from './ui';
 let redemption;
@@ -18,7 +18,49 @@ export default function CandidatePortal(){
     (raw?redeem(raw):portalApi(expected)).then(result=>{if(!live)return;setExam(result);if(raw){history.replaceState(null,'',location.pathname+location.search+'#/candidate/'+result.id);window.dispatchEvent(new Event('hashchange'));redemption=null;}}).catch(e=>{if(live)setError(e);redemption=null;}).finally(()=>{if(live)setLoading(false);});return()=>{live=false;};
   },[]);
   async function refresh(){try{setExam(await portalApi(exam?.id));setError('');}catch(e){setError(e);}}
-  return <div className="portal-shell"><header className="portal-header"><span className="brand-mark"><Sprout/></span><div><strong>{exam?.company||'TalentDesk'}</strong><small>候选人测评中心</small></div>{exam&&<Button secondary onClick={async()=>{try{if(!draftGuard.current())return;await portalApi(exam.id,'logout',{method:'POST'});setExam(null);setError('已退出。再次进入请使用您的专属邀请链接。');}catch(e){setError(e);}}}><LogOut size={16}/>退出</Button>}</header><main className="portal-main"><ErrorBox error={error}/>{loading?<Loading/>:exam?.status==='invited'?<section className="portal-intro panel pad stack"><span className="eyebrow">测评邀请</span><h1>{exam.candidateName}，您好</h1><h2>{exam.name}</h2><div className="exam-facts"><div><strong>{exam.questionCount}</strong><span>道业务题目</span></div><div><strong>{exam.duration}</strong><span>分钟限时</span></div></div><p>邀请有效期至 {date(exam.expiresAt)}。点击开始后由服务器计时，刷新、关闭或切换设备都不会重置计时。</p><div className="alert"><strong>请在开始前阅读</strong><ul><li>请独立完成。{exam.allowAI?'本测评允许使用 AI，请如实披露使用情况。':'本测评不允许使用 AI；若实际使用仍需如实披露，由企业人工复核。'}</li><li>答案会自动保存到服务器，请确认页面显示“已保存”。网络断开时请保留页面并及时恢复连接。</li><li>时间结束会提交截止前成功保存的答案，未成功保存的内容无法补交。</li><li>{exam.recordSwitch?'本测评会记录页面隐藏次数，供人工复核参考，不采集其他页面内容，不自动判定作弊。':'本测评不记录切屏行为。'}</li><li>企业将保存作答内容、提交时间和 AI 使用披露，用于本次招聘及人工复核。资料保留期限或删除请求请联系邀请您的 HR。</li><li>专属链接相当于访问凭证，请勿转发。结果反馈由 HR 审核后发布。</li></ul></div><label className="check-line"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)}/>我已阅读测评规则，同意企业为本次招聘保存并处理我的测评资料。</label><Button disabled={!consent||busy} onClick={async()=>{setBusy(true);try{setExam(await portalApi(exam.id,'start',{method:'POST',body:{consent:true}}));}catch(e){setError(e);if(e.status===409)await refresh();}finally{setBusy(false);}}}>{busy?'正在开始…':'同意并开始测评'}</Button></section>:exam?.status==='in_progress'?<ExamScreen key={exam.id} initial={exam} onComplete={setExam} draftGuard={draftGuard}/>:exam?.status==='submitted'?<section className="panel pad stack"><CheckCircle2 size={40} color="#168371"/><h1>测评已提交</h1><p>{exam.candidateName}，感谢您完成 {exam.name}。</p><p className="muted">服务器记录的提交时间：{date(exam.submittedAt)}</p>{exam.feedback?<Panel title="企业已发布反馈"><div className="pad stack"><p className="pre-wrap">{exam.feedback.message}</p><strong>人工评分：{exam.feedback.score} / 100</strong><small>{exam.feedback.basis}</small><small>发布时间：{date(exam.feedback.publishedAt)}</small></div></Panel>:<div className="alert">答卷正在等待企业人工复核，HR 发布反馈后可在此查看。</div>}<Button secondary onClick={refresh}>刷新反馈</Button></section>:!error&&<p>请通过企业提供的有效邀请链接进入。</p>}</main><footer className="portal-footer">TalentDesk · 招聘测评 · 如需帮助，请联系邀请您的 HR</footer></div>;
+  return <div className="portal-shell"><header className="portal-header"><span className="brand-mark"><Sprout/></span><div><strong>{exam?.company||'TalentDesk'}</strong><small>候选人测评中心</small></div>{exam&&<Button secondary onClick={async()=>{try{if(!draftGuard.current())return;await portalApi(exam.id,'logout',{method:'POST'});setExam(null);setError('已退出。再次进入请使用您的专属邀请链接。');}catch(e){setError(e);}}}><LogOut size={16}/>退出</Button>}</header><main className="portal-main"><ErrorBox error={error}/>{loading?<Loading/>:exam?.status==='invited'?<section className="portal-intro panel pad stack"><span className="eyebrow">测评邀请</span><h1>{exam.candidateName}，您好</h1><h2>{exam.name}</h2><div className="exam-facts"><div><strong>{exam.questionCount}</strong><span>道业务题目</span></div><div><strong>{exam.duration}</strong><span>分钟限时</span></div></div><p>邀请有效期至 {date(exam.expiresAt)}。点击开始后由服务器计时，刷新、关闭或切换设备都不会重置计时。</p><div className="alert"><strong>请在开始前阅读</strong><ul><li>请独立完成。{exam.allowAI?'本测评允许使用 AI，请如实披露使用情况。':'本测评不允许使用 AI；若实际使用仍需如实披露，由企业人工复核。'}</li><li>答案会自动保存到服务器，请确认页面显示“已保存”。网络断开时请保留页面并及时恢复连接。</li><li>时间结束会提交截止前成功保存的答案，未成功保存的内容无法补交。</li><li>{exam.recordSwitch?'本测评会记录页面隐藏次数，供人工复核参考，不采集其他页面内容，不自动判定作弊。':'本测评不记录切屏行为。'}</li><li>企业将保存作答内容、提交时间和 AI 使用披露，用于本次招聘及人工复核。资料保留期限或删除请求请联系邀请您的 HR。</li><li>专属链接相当于访问凭证，请勿转发。结果反馈由 HR 审核后发布。</li></ul></div>
+    <PracticeCheck examId={exam.id}/>
+    <label className="check-line"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)}/>我已阅读测评规则，同意企业为本次招聘保存并处理我的测评资料。</label><Button disabled={!consent||busy} onClick={async()=>{setBusy(true);try{setExam(await portalApi(exam.id,'start',{method:'POST',body:{consent:true}}));}catch(e){setError(e);if(e.status===409)await refresh();}finally{setBusy(false);}}}>{busy?'正在开始…':'同意并开始测评'}</Button></section>:exam?.status==='in_progress'?<ExamScreen key={exam.id} initial={exam} onComplete={setExam} draftGuard={draftGuard}/>:exam?.status==='submitted'?<section className="panel pad stack"><CheckCircle2 size={40} color="#168371"/><h1>测评已提交</h1><p>{exam.candidateName}，感谢您完成 {exam.name}。</p><p className="muted">服务器记录的提交时间：{date(exam.submittedAt)}</p>{exam.feedback?<Panel title="企业已发布反馈"><div className="pad stack"><p className="pre-wrap">{exam.feedback.message}</p><strong>人工评分：{exam.feedback.score} / 100</strong><small>{exam.feedback.basis}</small><small>发布时间：{date(exam.feedback.publishedAt)}</small></div></Panel>:<div className="alert">答卷正在等待企业人工复核，HR 发布反馈后可在此查看。</div>}<Button secondary onClick={refresh}>刷新反馈</Button></section>:!error&&<p>请通过企业提供的有效邀请链接进入。</p>}</main><footer className="portal-footer">TalentDesk · 招聘测评 · 如需帮助，请联系邀请您的 HR</footer></div>;
+}
+function PracticeCheck({ examId }) {
+  const [answer, setAnswer] = useState('');
+  const [status, setStatus] = useState('');
+  const [error, setError] = useState('');
+  const checking = status === 'checking';
+
+  async function check(event) {
+    event.preventDefault();
+    if (checking || !answer.trim()) return;
+    setStatus('checking');
+    setError('');
+    try {
+      await portalApi(examId, 'practice', { method: 'POST', body: { answer } });
+      setStatus('received');
+    } catch (error) {
+      setStatus('');
+      setError(error.code === 'PORTAL_CONTEXT_MISMATCH' ? '当前邀请已切换，请从本次专属链接重新进入。' : error);
+    }
+  }
+
+  return (
+    <details>
+      <summary>开考前试答（可选）</summary>
+      <form className="stack" onSubmit={check}>
+        <Field label="试答文字" hint="请勿填写个人信息。试答不计分，也不进入正式答卷。">
+          <input type="text" maxLength={200} readOnly={checking} value={answer} onChange={event => {
+            setAnswer(event.target.value);
+            setStatus('');
+            setError('');
+          }}/>
+        </Field>
+        <div className="inline-actions">
+          <Button secondary type="submit" disabled={checking || !answer.trim()}><Send size={16} aria-hidden="true"/>检查发送</Button>
+          <span className="muted" role="status">{checking ? '正在发送…' : status === 'received' ? '服务器已收到试答' : ''}</span>
+        </div>
+        <ErrorBox error={error}/>
+      </form>
+    </details>
+  );
 }
 function ExamScreen({initial,onComplete,draftGuard}){
   const [answers,setAnswers]=useState(initial.answers||{}),[usedAI,setUsedAI]=useState(initial.usedAI),[tick,setTick]=useState(Date.now()),[cycle,setCycle]=useState(0),[status,setStatus]=useState('已读取服务器保存的答案'),[error,setError]=useState(''),[submitting,setSubmitting]=useState(false),[blocked,setBlocked]=useState(false),[ended,setEnded]=useState(false),[confirm,setConfirm]=useState(false);

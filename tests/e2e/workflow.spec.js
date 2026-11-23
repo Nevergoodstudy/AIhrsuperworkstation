@@ -30,6 +30,43 @@ function apiClient(request) {
   } };
 }
 
+test('手机端开考前试答可重试且不计时、不写入正式答卷', async ({ request, page }) => {
+  const hr = apiClient(request);
+  expect((await hr.call('/api/auth/login', 'POST', { email: 'hr@example.test', password: 'E2e-only-password!2026' })).status).toBe(200);
+  const business = await setupBusiness(hr);
+  const link = await invite(hr, business);
+  const headers = { 'X-Exam-Id': link.id };
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(link.inviteUrl);
+  await page.getByText('开考前试答（可选）', { exact: true }).press('Enter');
+  const practice = page.getByLabel('试答文字', { exact: true });
+  await expect(practice).toBeVisible();
+  await expect(page.getByRole('button', { name: '检查发送' })).toBeDisabled();
+  await page.route('**/api/portal/practice', route => route.abort(), { times: 1 });
+  await practice.fill('这是一段测试文字');
+  await practice.press('Enter');
+  await expect(page.getByRole('alert')).toContainText('网络连接失败');
+  await expect(practice).toHaveValue('这是一段测试文字');
+  await practice.press('Enter');
+  await expect(page.getByRole('status')).toHaveText('服务器已收到试答');
+  await expect(page.getByRole('timer')).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  const before = await (await page.request.get('/api/portal/me', { headers })).json();
+  expect(before).toMatchObject({ status: 'invited', startedAt: null, deadlineAt: null });
+  expect(before).not.toHaveProperty('questions');
+
+  await page.getByLabel('我已阅读测评规则', { exact: false }).check();
+  await page.getByRole('button', { name: '同意并开始测评', exact: true }).click();
+  await expect(page.getByLabel('第 1 题答案', { exact: true })).toHaveValue('');
+  const after = await page.request.get('/api/portal/me', { headers });
+  expect(await after.json()).toMatchObject({ status: 'in_progress', answers: {}, revision: 0 });
+  const latePractice = await page.request.post('/api/portal/practice', {
+    headers: { ...headers, Origin: 'http://127.0.0.1:4173', 'X-Requested-With': 'TalentDesk' },
+    data: { answer: '开始计时后的试答' }
+  });
+  expect(latePractice.status()).toBe(409);
+});
+
 test('同浏览器双邀请：旧页保留并下载草稿，刷新仍绑定原考试', async ({ browser }) => {
   const staff = await browser.newContext(), shared = await browser.newContext();
   try {
