@@ -2,6 +2,19 @@
 
 本文件记录面向使用者的版本变化。每次发布的源代码以 Git 标签为准，正式上线状态以部署验收记录为准。
 
+## [2.0.0] - 2026-11-23
+
+### 新增
+
+- 候选人可在正式计时前试答并确认服务器收到测试文字。发送失败时保留本页输入，支持重试。
+- 试答仅在当前测评处于待开始状态时开放，不计分，也不写入正式答卷。
+
+### 修复
+
+- 项目位于隐藏目录下时，已构建的工作台首页可以正常打开。
+
+从 v1.1.0 升级无需新增 SQLite 迁移，既有候选人邀请可继续使用。操作步骤和验证范围见 [v2.0.0 发布说明](docs/releases/v2.0.0.md)。
+
 ## [1.1.0] - 2026-11-17
 
 ### 修复
@@ -32,5 +45,6 @@
 - 提供 SQLite 持久化、私有简历原件、可选 AI 和 SMTP、Docker / Caddy、备份恢复及自动化测试。
 - 交付《简历之后》短片、路演素材、运维与验收文档；WebM 作为该版本附件保存。
 
+[2.0.0]: https://github.com/Nevergoodstudy/AIhrsuperworkstation/releases/tag/v2.0.0
 [1.1.0]: https://github.com/Nevergoodstudy/AIhrsuperworkstation/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Nevergoodstudy/AIhrsuperworkstation/releases/tag/v1.0.0

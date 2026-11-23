@@ -20,6 +20,14 @@
 
 技术栈：React 19、Vite 8、Node.js 24、Express 5、SQLite；浏览器测试使用 Playwright，持续集成使用 GitHub Actions。
 
+## v2.0.0 · 候选人开考前试答（2026-11-23）
+
+- 候选人可在正式开考前试答，确认试答文字能送达服务器。网络失败时保留输入，可在原页面重试。
+- 试答属于可选步骤，不计分，不启动正式计时，也不写入正式答卷。
+- 修复项目检出在隐藏目录下时，打开已构建的工作台首页返回 404 的问题。
+
+查看 [GitHub Release](https://github.com/Nevergoodstudy/AIhrsuperworkstation/releases/tag/v2.0.0)、[发布说明](docs/releases/v2.0.0.md) 或 [完整变更记录](CHANGELOG.md)。
+
 ## v1.1.0 · 第一阶段改进（2026-11-17）
 
 - 同浏览器多份邀请分别核对页面测评 ID 与授权会话，阻止旧标签页串写；冲突时保留草稿并提供下载副本。
@@ -37,7 +45,7 @@
 | [本地启动](#本地启动) | 依赖安装、管理员创建与开发环境启动 |
 | [运维手册](docs/operations.md) | HTTPS 部署、监控、定时备份、恢复、升级和回滚 |
 | [交付验收记录](docs/acceptance.md) | 已验证范围、验证证据、能力边界和待验收事项 |
-| [版本变更](CHANGELOG.md) / [v1.1.0 发布说明](docs/releases/v1.1.0.md) | 版本历史、改进内容、升级注意事项与验证结果 |
+| [版本变更](CHANGELOG.md) / [v2.0.0 发布说明](docs/releases/v2.0.0.md) | 版本历史、改进内容、升级注意事项与验证结果 |
 | [改进策略](docs/improvement-strategy-2026-11-16.md) / [第一阶段实施记录](docs/phase-one-results-2026-11-17.md) | 竞品研究、优先级、已落地修复及后续范围 |
 | [容器与恢复验收](docs/phase-one-deployment.md) | 隔离容器检查、报告及正式部署剩余条件 |
 | [简历之后 · 短片说明](media/after-the-resume/README.md) | 96 秒动态短片、分镜、字幕、播放器源文件和制作记录 |
