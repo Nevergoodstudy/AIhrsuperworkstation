@@ -28,6 +28,9 @@ export function openDatabase(dataDir) {
     CREATE INDEX IF NOT EXISTS exams_candidate ON exams(candidate_id);
     CREATE INDEX IF NOT EXISTS portal_expiry ON portal_sessions(expires_at);
     CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
+    CREATE INDEX IF NOT EXISTS rate_limits_expiry ON rate_limits(reset_at);
+    CREATE INDEX IF NOT EXISTS exams_invite_expiry ON exams(expires_at) WHERE status='invited';
+    CREATE INDEX IF NOT EXISTS exams_deadline ON exams(deadline_at) WHERE status='in_progress';
     INSERT OR IGNORE INTO migrations VALUES(1, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
   `);
   const columns = db.prepare('PRAGMA table_info(candidates)').all();
