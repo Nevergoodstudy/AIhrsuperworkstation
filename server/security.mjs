@@ -13,9 +13,14 @@ export function publicUser(user) { return { id: user.id, name: user.name, email:
 export function audit(db, actor, action, resource) { db.prepare('INSERT INTO audit(actor_id,action,resource_id,created_at) VALUES(?,?,?,?)').run(actor, action, resource, now()); }
 export function fail(status, message) { return Object.assign(new Error(message), { status }); }
 export function limit(db, key, maximum, windowMs) {
-  const time = Date.now(); db.prepare('DELETE FROM rate_limits WHERE reset_at < ?').run(time);
-  const row = db.prepare('SELECT * FROM rate_limits WHERE key=?').get(key);
-  if (row && row.hits >= maximum) throw fail(429, '请求过于频繁，请稍后重试');
-  db.prepare('INSERT INTO rate_limits VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET hits=hits+1').run(key, time + windowMs);
+  const time = Date.now();
+  const result = db.prepare(`
+    INSERT INTO rate_limits VALUES(?,1,?)
+    ON CONFLICT(key) DO UPDATE SET
+      hits=CASE WHEN reset_at <= ? THEN 1 ELSE hits+1 END,
+      reset_at=CASE WHEN reset_at <= ? THEN excluded.reset_at ELSE reset_at END
+    WHERE reset_at <= ? OR hits < ?
+  `).run(key, time + windowMs, time, time, time, maximum);
+  if (!result.changes) throw fail(429, '请求过于频繁，请稍后重试');
 }
 export function redact(text) { return text.replace(/[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}/g, '[邮箱已隐藏]').replace(/(?:\+?86[- ]?)?1[3-9]\d{9}|(?:\+?\d[\d\s()-]{7,}\d)/g, '[电话已隐藏]'); }

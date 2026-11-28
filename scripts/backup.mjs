@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { DatabaseSync, backup } from 'node:sqlite';
 import { mkdir, copyFile, readFile, writeFile, rm, stat } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
+import { transaction } from '../server/db.mjs';
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 const validKey=key=>/^[0-9a-f-]{36}$/.test(key);
 async function integrity(db){const rows=db.prepare('PRAGMA integrity_check').all();if(rows.some(row=>Object.values(row)[0]!=='ok'))throw new Error('数据库完整性检查失败');if(db.prepare('PRAGMA foreign_key_check').all().length)throw new Error('数据库外键检查失败');}
@@ -30,7 +31,24 @@ export async function verifyBackup(root){
 }
 export async function restoreBackup(root,target){
  const manifest=await verifyBackup(root);await mkdir(target,{mode:0o700});
- try{await mkdir(path.join(target,'resumes'),{mode:0o700});for(const file of manifest.files)await copyFile(path.join(root,file.path),path.join(target,file.path));const db=new DatabaseSync(path.join(target,'talent.sqlite'));try{db.exec('DELETE FROM sessions; DELETE FROM portal_sessions;');await integrity(db);}finally{db.close();}}catch(error){await rm(target,{recursive:true,force:true});throw error;}return target;
+ try {
+  await mkdir(path.join(target,'resumes'), { mode:0o700 });
+  for (const file of manifest.files) await copyFile(path.join(root,file.path), path.join(target,file.path));
+  const db = new DatabaseSync(path.join(target,'talent.sqlite'));
+  try {
+   transaction(db, () => {
+    db.exec('DELETE FROM sessions; DELETE FROM portal_sessions;');
+    if (db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='feedback_links'").get()) {
+     db.exec('DELETE FROM feedback_links');
+    }
+   });
+   await integrity(db);
+  } finally { db.close(); }
+ } catch (error) {
+  await rm(target, { recursive:true, force:true });
+  throw error;
+ }
+ return target;
 }
 if(process.argv[1] && import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href){
  process.umask(0o077);const [mode,arg,target]=process.argv.slice(2);

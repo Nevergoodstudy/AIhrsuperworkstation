@@ -55,6 +55,35 @@ test('登录、CSRF、强制改密、停用和会话失效',async t=>{
  assert.equal((await admin.call('/api/admin/users','POST',{name:'无部门',email:'bad@example.test',password,role:'department',department:''})).status,400);
  assert.equal((await admin.call('/api/auth/logout','POST')).status,200);assert.equal((await admin.call('/api/admin')).status,401);
 });
+test('管理员审计以资源编号及 UTC 日期筛选较旧的记录', async t => {
+ const f = await fixture(); t.after(() => f.cleanup());
+ const admin = f.client(), hr = f.client(), department = f.client();
+ await admin.login('admin'); await hr.login(); await department.login('department');
+ const target = id();
+ f.db.prepare(`
+   INSERT INTO audit(actor_id,action,resource_id,created_at) VALUES
+   (?, 'exam.revoke', ?, '2020-01-02T00:00:00.000Z'),
+   (?, 'feedback.retract', ?, '2020-01-02T23:59:59.999Z'),
+   (?, 'exam.revoke', ?, '2020-01-03T00:00:00.000Z'),
+   (?, 'job.update', ?, '2020-01-02T12:00:00.000Z')
+ `).run(f.accounts.hr.id, target, f.accounts.hr.id, target, f.accounts.hr.id, target, f.accounts.hr.id, id());
+ f.db.exec(`
+   WITH RECURSIVE entries(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM entries WHERE n<201)
+   INSERT INTO audit(actor_id,action,resource_id,created_at)
+   SELECT 'system','test.newer','newer','2020-01-04T00:00:00.000Z' FROM entries
+ `);
+ const unfiltered = await admin.call('/api/admin');
+ assert.equal(unfiltered.body.audit.length, 200);
+ assert.ok(!unfiltered.body.audit.some(row => row.resource_id === target));
+ const start = '/api/admin?' + new URLSearchParams({ resourceId: target, from: '2020-01-02', to: '2020-01-02' });
+ const result = await admin.call(start);
+ assert.equal(result.status, 200);
+ assert.deepEqual(result.body.audit.map(row => row.action), ['feedback.retract', 'exam.revoke']);
+ assert.equal((await admin.call('/api/admin?from=2020-01-03&to=2020-01-02')).status, 400);
+ assert.equal((await admin.call('/api/admin?to=2020-02-31')).status, 400);
+ assert.equal((await hr.call(start)).status, 403);
+ assert.equal((await department.call(start)).status, 403);
+});
 test('服务器限时、到期邀请、撤销与版本冲突',async t=>{
  const f=await fixture();t.after(()=>f.cleanup());const hr=f.client(),p=f.client();await hr.login();const b=await setupBusiness(hr);let link=await invite(hr,b);
  f.db.prepare('UPDATE exams SET expires_at=? WHERE id=?').run('2020-01-01T00:00:00.000Z',link.id);assert.equal((await p.call('/api/portal/redeem','POST',{token:link.token})).status,410);
@@ -75,7 +104,44 @@ test('原件私有存储、下载、删除及持久化',async t=>{
 });
 test('真实邮件状态由发送服务结果决定',async t=>{
  const messages=[];const f=await fixture({smtpUrl:'smtp://example.test',mailFrom:'HR <hr@example.test>',mailer:{async sendMail(message){messages.push(message);return {accepted:[message.to],rejected:[]};}}});t.after(()=>f.cleanup());const hr=f.client();await hr.login();const b=await setupBusiness(hr);const link=await invite(hr,b,true);assert.equal(link.mailStatus,'accepted');assert.equal(messages.length,1);assert.ok(messages[0].text.includes(link.inviteUrl));assert.equal(f.db.prepare('SELECT mail_status FROM exams WHERE id=?').get(link.id).mail_status,'accepted');
- await hr.call('/api/exams/'+link.id+'/revoke','POST');f.config.mailer={async sendMail(){throw new Error('password must not leak');}};const failed=await invite(hr,b,true);assert.equal(failed.mailStatus,'failed');assert.doesNotMatch(failed.mailError,/password/);assert.ok(failed.inviteUrl);
+ await hr.call('/api/exams/'+link.id+'/revoke','POST');f.config.mailer={async sendMail(){throw Object.assign(new Error('password must not leak'), { responseCode: 550 });}};const failed=await invite(hr,b,true);assert.equal(failed.mailStatus,'failed');assert.doesNotMatch(failed.mailError,/password/);assert.ok(failed.inviteUrl);
+});
+
+test('邮件结果未知须核实后重发，并防止重复投递', async t => {
+ const receiving = Promise.withResolvers(), release = Promise.withResolvers();
+ let attempts = 0;
+ const f = await fixture({
+  smtpUrl: 'smtp://example.test', mailFrom: 'hr@example.test',
+  mailer: { async sendMail() {
+   attempts++;
+   if (attempts === 1) throw new Error('synthetic private provider detail');
+   receiving.resolve();
+   await release.promise;
+   return { accepted: ['candidate@example.test'] };
+  }}
+ });
+ t.after(() => f.cleanup());
+ const hr = f.client();
+ assert.equal((await hr.login()).status, 200);
+ const b = await setupBusiness(hr);
+ const link = await invite(hr, b, true);
+ assert.equal(link.mailStatus, 'unknown');
+ assert.doesNotMatch(link.mailError, /private provider/);
+ const route = '/api/exams/' + link.id + '/send';
+ const send = confirmUnknown => hr.call(route, 'POST', { inviteToken: link.token, confirmUnknown });
+ assert.equal((await send(false)).status, 409);
+ assert.equal(attempts, 1);
+ const retry = send(true);
+ try {
+  await Promise.race([receiving.promise, retry.then(() => assert.fail('邮件未开始发送'))]);
+  assert.equal((await send(true)).status, 409);
+ } finally { release.resolve(); }
+ assert.equal((await retry).body.mailStatus, 'accepted');
+ assert.equal((await send(true)).status, 409);
+ assert.equal(attempts, 2);
+ const history = (await hr.call('/api/exams/' + link.id)).body.operationalEvents;
+ assert.deepEqual(history.map(item => item.details.mailStatus), ['accepted', 'unknown']);
+ assert.doesNotMatch(JSON.stringify(history), /private provider/);
 });
 
 test('岗位、题目和测评方案的过期版本不会覆盖新数据',async t=>{

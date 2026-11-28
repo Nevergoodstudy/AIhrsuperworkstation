@@ -28,6 +28,9 @@ export function openDatabase(dataDir) {
     CREATE INDEX IF NOT EXISTS exams_candidate ON exams(candidate_id);
     CREATE INDEX IF NOT EXISTS portal_expiry ON portal_sessions(expires_at);
     CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
+    CREATE INDEX IF NOT EXISTS rate_limits_expiry ON rate_limits(reset_at);
+    CREATE INDEX IF NOT EXISTS exams_invite_expiry ON exams(expires_at) WHERE status='invited';
+    CREATE INDEX IF NOT EXISTS exams_deadline ON exams(deadline_at) WHERE status='in_progress';
     INSERT OR IGNORE INTO migrations VALUES(1, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
   `);
   const columns = db.prepare('PRAGMA table_info(candidates)').all();
@@ -45,6 +48,74 @@ export function openDatabase(dataDir) {
       CREATE INDEX IF NOT EXISTS candidate_events_candidate ON candidate_events(candidate_id, created_at);
       CREATE TABLE IF NOT EXISTS analysis_runs(id TEXT PRIMARY KEY, candidate_id TEXT NOT NULL REFERENCES candidates(id) ON DELETE CASCADE, job_id TEXT NOT NULL, candidate_version INTEGER NOT NULL, job_version INTEGER NOT NULL, resume_hash TEXT NOT NULL, model TEXT NOT NULL, prompt_version TEXT NOT NULL, requested_by TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('running','completed','superseded','rejected','failed')), reason TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, completed_at TEXT);
       INSERT OR IGNORE INTO migrations VALUES(4, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+    `);
+  });
+  transaction(db, () => db.exec(`
+    CREATE TABLE IF NOT EXISTS review_plans(
+      exam_id TEXT PRIMARY KEY REFERENCES exams(id) ON DELETE CASCADE,
+      owner_id TEXT NOT NULL REFERENCES users(id),
+      due_at TEXT NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS review_tasks(
+      id TEXT PRIMARY KEY,
+      exam_id TEXT NOT NULL REFERENCES review_plans(exam_id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id),
+      active INTEGER NOT NULL DEFAULT 1,
+      ratings TEXT NOT NULL DEFAULT '{}',
+      recommendation TEXT NOT NULL DEFAULT '建议补充考察',
+      note TEXT NOT NULL DEFAULT '',
+      version INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT NOT NULL,
+      submitted_at TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS active_review_assignment ON review_tasks(exam_id, user_id) WHERE active=1;
+    CREATE INDEX IF NOT EXISTS review_tasks_user ON review_tasks(user_id, exam_id) WHERE active=1;
+    CREATE TABLE IF NOT EXISTS review_workflow_events(
+      id INTEGER PRIMARY KEY,
+      exam_id TEXT NOT NULL REFERENCES review_plans(exam_id) ON DELETE CASCADE,
+      actor_id TEXT NOT NULL REFERENCES users(id),
+      action TEXT NOT NULL,
+      details TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS review_events_exam ON review_workflow_events(exam_id, id);
+    CREATE TABLE IF NOT EXISTS feedback_links(
+      exam_id TEXT PRIMARY KEY REFERENCES exams(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL UNIQUE,
+      feedback_hash TEXT NOT NULL,
+      expires_at TEXT NOT NULL
+    );
+    INSERT OR IGNORE INTO migrations VALUES(5, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+  `));
+  transaction(db, () => {
+    if (db.prepare('SELECT 1 FROM migrations WHERE version=6').get()) return;
+    db.exec(`
+      CREATE TABLE job_review_policies(
+        job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+        enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+        settings TEXT NOT NULL,
+        version INTEGER NOT NULL
+      );
+      ALTER TABLE review_plans ADD COLUMN due_hours INTEGER;
+      ALTER TABLE exams ADD COLUMN job_title TEXT;
+      CREATE TABLE exam_operational_events(
+        id INTEGER PRIMARY KEY,
+        exam_id TEXT NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+        actor_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        details TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX exam_operational_events_exam ON exam_operational_events(exam_id, action, id);
+      CREATE TABLE feedback_access_events(
+        exam_id TEXT NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+        feedback_hash TEXT NOT NULL,
+        first_access_at TEXT NOT NULL,
+        PRIMARY KEY(exam_id, feedback_hash)
+      );
+      CREATE INDEX review_plans_due_order ON review_plans(due_at, exam_id);
+      INSERT INTO migrations VALUES(6, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
     `);
   });
   return db;

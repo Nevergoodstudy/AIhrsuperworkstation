@@ -2,7 +2,8 @@ import { createContext, useCallback, useContext, useEffect, useState } from 'rea
 import { BriefcaseBusiness, Users, LayoutDashboard, ClipboardList, BookOpen, Settings, LogOut, Plus, RefreshCw, Sprout, ArrowRight, ShieldCheck, Download, Search } from 'lucide-react';
 import { api, date, roles, examStates, stages } from './api';
 import { Button, ErrorBox, Empty, Loading, Badge, Panel, Heading, Modal, Field, Form, Confirm } from './ui';
-import CandidatePortal from './CandidatePortal';
+import CandidatePortal, { CandidateResult } from './CandidatePortal';
+import { DecisionForm, FeedbackLinkActions, JobReviewPolicyForm, ReviewPlanForm, ReviewTasks, WorkflowStatus } from './ReviewWorkflow';
 
 const Workspace = createContext(null);
 const useWorkspace = () => useContext(Workspace);
@@ -11,15 +12,20 @@ const choices = array => array.map(item=>({value:item.id,label:item.title || ite
 const jobFields=[textField('title','岗位名称'),textField('department','所属部门（与复核人部门名称完全一致）'),textField('location','工作地点'),textField('description','岗位职责',10000,{type:'textarea'}),{key:'requirementsText',label:'筛选要求（一行一项）',type:'textarea',maxLength:15000,hint:'覆盖率仅表示这些要求的证据覆盖，不是录用分数。'},{key:'status',label:'招聘状态',type:'select',options:['招聘中','暂停','已关闭']}];
 const questionFields=[textField('title','题目正文',10000,{type:'textarea'}),textField('competency','考察能力'),{key:'type',label:'题目类型',type:'select',options:['情景题','实操题','简答题']},{key:'level',label:'难度',type:'select',options:['基础','进阶','专家']},{key:'minutes',label:'建议作答分钟数',type:'number',min:1,max:180,required:true},textField('rubric','人工评分要点',5000,{type:'textarea',hint:'请写明 1–5 分的具体标准；该内容不会发送给候选人。'}),{key:'active',label:'可用于新测评',type:'checkbox'}];
 export default function App() {
-  const [hash,setHash]=useState(location.hash);
-  useEffect(()=>{ const change=()=>setHash(location.hash);window.addEventListener('hashchange',change); return()=>window.removeEventListener('hashchange',change);},[]);
+  const [{ hash, visit }, setRoute] = useState({ hash: location.hash, visit: 0 });
+  useEffect(() => {
+    const change = () => setRoute(previous => ({ hash: location.hash, visit: previous.visit + 1 }));
+    window.addEventListener('hashchange', change);
+    return () => window.removeEventListener('hashchange', change);
+  }, []);
+  if (/^#\/result(?:\/|$)/.test(hash)) return <CandidateResult key={visit} token={hash.slice('#/result/'.length)}/>;
   if (/^#\/(invite\/|candidate)/.test(hash)) return <CandidatePortal key={hash}/>;
   return <StaffApp/>;
 }
 function StaffApp() {
   const [auth,setAuth]=useState(null),[loading,setLoading]=useState(true),[error,setError]=useState('');
   const [data,setData]=useState(null),[view,setView]=useState('dashboard'),[modal,setModal]=useState(null),[notice,setNotice]=useState('');
-  const load=useCallback(async()=>{ const result=await api('/api/workspace');setData(result); },[]);
+  const load=useCallback(async()=>{ const result=await api('/api/workspace?view=summary');setData(result); },[]);
   const initialize=useCallback(async()=>{setLoading(true);setError('');try { const result=await api('/api/auth/me');setAuth(result);if (!result.user.mustChange) await load(); } catch(e) {if(e.status!==401)setError(e);setAuth(null);}finally{setLoading(false);}},[load]);
   useEffect(()=>{ initialize();const expire=()=>{setAuth(null);setData(null);setModal(null);setNotice('登录已过期，请重新登录。');};window.addEventListener('staff-session-expired',expire);return()=>window.removeEventListener('staff-session-expired',expire);},[initialize]);
   useEffect(()=>{if(!notice)return;const t=setTimeout(()=>setNotice(''),7000);return()=>clearTimeout(t);},[notice]);
@@ -45,7 +51,32 @@ function Dashboard(){
 function Jobs(){
   const {data,hr,open,close,mutate}=useWorkspace();
   function edit(job){open(job?'编辑岗位':'创建岗位',<Form initial={job?{...job,requirementsText:job.requirements.join('\n')}:{title:'',department:'',location:'',description:'',requirementsText:'',status:'招聘中'}} fields={jobFields} onSubmit={async value=>{await mutate('/api/jobs'+(job?'/'+job.id:''),job?'PUT':'POST',{...value,requirements:value.requirementsText.split('\n').map(s=>s.trim()).filter(Boolean)});close();}}/>);}
-  return <><Heading title="招聘岗位" description="明确岗位要求，所有候选人和测评均归属具体岗位。">{hr&&<Button onClick={()=>edit()}><Plus size={17}/>创建岗位</Button>}</Heading>{!data.jobs.length?<Empty>暂无岗位。</Empty>:<div className="card-grid">{data.jobs.map(job=><Panel key={job.id} title={job.title} actions={<Badge>{job.status}</Badge>}><div className="stack pad"><p className="muted">{job.department} · {job.location}</p><p className="pre-wrap">{job.description}</p><div className="tags">{job.requirements.map(r=><Badge key={r}>{r}</Badge>)}</div><p>{data.candidates.filter(c=>c.jobId===job.id).length} 位候选人</p>{hr&&<Button secondary onClick={()=>edit(job)}>编辑岗位</Button>}</div></Panel>)}</div>}</>;
+  function downloadPilot(job) {
+    const today = new Date();
+    const start = new Date(today.getTime() - 29 * 86400000);
+    open('导出试点记录', <Form initial={{ from: start.toISOString().slice(0, 10), to: today.toISOString().slice(0, 10) }}
+      fields={[
+        { key: 'from', label: '提交起始日（UTC）', type: 'date', required: true },
+        { key: 'to', label: '提交结束日（UTC）', type: 'date', required: true }
+      ]}
+      submit="下载 CSV" onSubmit={({ from, to }) => {
+        if (from > to) throw new Error('起始日期不能晚于结束日期');
+        const link = document.createElement('a');
+        link.href = '/api/jobs/' + job.id + '/pilot.csv?' + new URLSearchParams({ from, to });
+        link.download = 'pilot-review.csv';
+        link.click();
+        close();
+      }}/>);
+  }
+  return <><Heading title="招聘岗位" description="明确岗位要求，所有候选人和测评均归属具体岗位。">{hr&&<Button onClick={()=>edit()}><Plus size={17}/>创建岗位</Button>}</Heading>{!data.jobs.length?<Empty>暂无岗位。</Empty>:<div className="card-grid">{data.jobs.map(job=><Panel key={job.id} title={job.title} actions={<Badge>{job.status}</Badge>}><div className="stack pad"><p className="muted">{job.department} · {job.location}</p><p className="pre-wrap">{job.description}</p><div className="tags">{job.requirements.map(r=><Badge key={r}>{r}</Badge>)}</div><p>{data.candidates.filter(c=>c.jobId===job.id).length} 位候选人</p>{hr && <div className="inline-actions">
+    <Button secondary onClick={() => edit(job)}>编辑岗位</Button>
+    <Button secondary onClick={() => open('岗位评审默认安排', <JobReviewPolicyForm jobId={job.id} ownerId={data.user.id}
+      save={async values => {
+        await mutate('/api/jobs/' + job.id + '/review-policy', 'PUT', values, '岗位评审默认安排已保存');
+        close();
+      }}/>) }>岗位评审默认安排</Button>
+    <Button secondary onClick={() => downloadPilot(job)}>导出试点记录</Button>
+  </div>}</div></Panel>)}</div>}</>;
 }
 function CandidateTable({candidates}){
   const {data,open}=useWorkspace();
@@ -83,24 +114,263 @@ function AssessmentForm({assessment}){
   const {data,mutate,close}=useWorkspace();return <Form initial={assessment||{jobId:data.jobs[0]?.id||'',name:'',duration:60,questionIds:[],allowAI:false,randomize:false,recordSwitch:false}} fields={[textField('name','方案名称'),{key:'jobId',label:'所属岗位',type:'select',required:true,options:choices(data.jobs)},{key:'duration',label:'总时长（分钟）',type:'number',min:1,max:240,required:true},{key:'allowAI',label:'允许使用 AI（仍需候选人披露）',type:'checkbox'},{key:'randomize',label:'随机排列题目',type:'checkbox'},{key:'recordSwitch',label:'记录页面隐藏次数（会向候选人告知，仅作复核参考）',type:'checkbox'}]} onSubmit={async value=>{if(!value.questionIds.length)throw new Error('请至少选择一道题');await mutate('/api/assessments'+(assessment?'/'+assessment.id:''),assessment?'PUT':'POST',value);close();}}>{(values,change)=><div className="question-picker"><strong>选择题目 · 已选 {values.questionIds.length} 道</strong>{data.questions.filter(q=>q.active||values.questionIds.includes(q.id)).map(q=><label className="check-line" key={q.id}><input type="checkbox" checked={values.questionIds.includes(q.id)} onChange={e=>change('questionIds',e.target.checked?[...values.questionIds,q.id]:values.questionIds.filter(id=>id!==q.id))}/><span>{q.title}<small>{q.competency} · {q.minutes} 分钟{!q.active&&' · 已停用，请移除'}</small></span></label>)}</div>}</Form>;
 }
 function InviteForm({candidate}){
-  const {data,refresh,notify}=useWorkspace();const [invitation,setInvitation]=useState(null),[error,setError]=useState('');
+  const {data,refresh,notify}=useWorkspace();const [invitation,setInvitation]=useState(null),[error,setError]=useState(''),[sending,setSending]=useState(false),[confirmed,setConfirmed]=useState(false);
   const options=data.assessments.filter(a=>a.jobId===candidate.jobId);
-  if(invitation)return <div className="stack"><div className="alert">邀请已创建。链接只在本次创建时展示，请立即保存并通过可信渠道发送给候选人。</div><Field label="候选人专属邀请链接"><input readOnly value={invitation.inviteUrl} onFocus={e=>e.target.select()}/></Field><Button onClick={async()=>{try{await navigator.clipboard.writeText(invitation.inviteUrl);notify('邀请链接已复制');}catch{setError('自动复制不可用，请选中上方链接后复制。');}}}>复制邀请链接</Button><p>{invitation.mailStatus==='accepted'?'邮件已被 SMTP 服务接受，最终送达请以邮箱回执为准。':invitation.mailStatus==='failed'?'邮件发送失败：'+invitation.mailError:'尚未发送邮件，请手动分享链接。'}</p><ErrorBox error={error}/><Button secondary disabled={!data.readiness.email} onClick={async()=>{try{const r=await api('/api/exams/'+invitation.id+'/send',{method:'POST',body:{inviteToken:invitation.inviteUrl.split('/').pop()}});setInvitation({...invitation,mailStatus:r.mailStatus,mailError:''});await refresh();}catch(e){setError(e);}}}>通过邮件发送 / 重试</Button><p className="muted">链接丢失时可撤销旧邀请并创建新邀请。不要公开分享专属链接。</p></div>;
+  if (invitation) return <div className="stack">
+    <p>邀请已创建。请保存链接并通过可信渠道分享。</p>
+    <Field label="候选人专属邀请链接"><input readOnly value={invitation.inviteUrl} onFocus={event => event.target.select()}/></Field>
+    <Button onClick={async () => {
+      try { await navigator.clipboard.writeText(invitation.inviteUrl); notify('邀请链接已复制'); }
+      catch { setError('自动复制不可用，请选中上方链接后复制。'); }
+    }}>复制邀请链接</Button>
+    <p role="status">{invitation.mailStatus === 'accepted' ? '邮件已被 SMTP 服务接受，最终送达请以邮箱回执为准。' :
+      invitation.mailError || '尚未发送邮件，请手动分享链接。'}</p>
+    {invitation.mailStatus === 'unknown' && <label className="check-line">
+      <input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)}/>已核实，可重新发送
+    </label>}
+    <ErrorBox error={error}/>
+    <Button secondary disabled={!data.readiness.email || sending || invitation.mailStatus === 'accepted' ||
+      (invitation.mailStatus === 'unknown' && !confirmed)} onClick={async () => {
+      setSending(true);
+      setError('');
+      try {
+        const result = await api('/api/exams/' + invitation.id + '/send', { method: 'POST', body: {
+          inviteToken: invitation.inviteUrl.split('/').pop(), confirmUnknown: confirmed
+        }});
+        setInvitation({ ...invitation, ...result });
+        setConfirmed(false);
+        await refresh();
+      } catch (error) { setError(error); }
+      finally { setSending(false); }
+    }}>通过邮件发送 / 重试</Button>
+    <p className="muted">链接丢失时可撤销旧邀请并创建新邀请。</p>
+  </div>;
   if(!options.length)return <Empty>该岗位尚无测评方案，请先创建对应方案。</Empty>;
   return <Form initial={{assessmentId:options[0].id,validDays:7,sendEmail:false}} fields={[{key:'assessmentId',label:'测评方案',type:'select',options:choices(options),required:true},{key:'validDays',label:'邀请有效天数',type:'number',min:1,max:14,required:true},{key:'sendEmail',label:'同时发送邮件（需已配置 SMTP 且候选人有邮箱）',type:'checkbox'}]} submit="创建专属邀请" onSubmit={async value=>{const result=await api('/api/exams',{method:'POST',body:{...value,candidateId:candidate.id}});setInvitation(result);await refresh();}}><p>候选人：{candidate.name} · 创建邀请时固定题目与评分要点；每位候选人只能有一份待开始或进行中的测评。面试中、录用、不合适等人工阶段会保留；人工改阶段后，有效测评仍可完成，但不会自动覆盖该阶段。如需结束作答，请同时撤销测评。</p></Form>;
 }
 function ExamTable({exams}){
   const {data,open}=useWorkspace();if(!exams.length)return <Empty>暂无测评记录。</Empty>;return <div className="table-scroll"><table className="business-table"><thead><tr><th>候选人 / 测评</th><th>状态</th><th>邀请有效期 / 提交时间</th><th>操作</th></tr></thead><tbody>{exams.map(e=><tr key={e.id}><td><strong>{data.candidates.find(c=>c.id===e.candidateId)?.name}</strong><small>{e.name}</small></td><td><Badge warn={['expired','revoked'].includes(e.status)}>{examStates[e.status]}</Badge>{e.feedback&&<small>反馈已发布</small>}</td><td>{date(e.submittedAt||e.expiresAt)}</td><td><button className="text-button" onClick={()=>open('测评答卷与人工复核',<ExamDetail examId={e.id}/>)}>查看测评</button></td></tr>)}</tbody></table></div>;
 }
-function Exams(){const {data}=useWorkspace();const [status,setStatus]=useState('');return <><Heading title="测评与人工复核" description="按创建时的题目快照复核；切屏记录与 AI 披露均不自动判定违规。"/><Panel><div className="filter-bar"><select aria-label="测评状态" value={status} onChange={e=>setStatus(e.target.value)}><option value="">全部状态</option>{Object.entries(examStates).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></div><ExamTable exams={data.exams.filter(e=>!status||e.status===status)}/></Panel></>;}
-function ExamDetail({examId}){
-  const {data,hr,mutate,open,close,refresh}=useWorkspace();const [exam,setExam]=useState(null),[error,setError]=useState('');const load=()=>api('/api/exams/'+examId).then(setExam);useEffect(()=>{load().catch(setError);},[examId]);
-  if(!exam)return <><ErrorBox error={error}/>{!error&&<Loading/>}</>;
-  const mine=exam.reviews.find(r=>r.userId===data.user.id);
-  return <div className="stack report-print"><ErrorBox error={error}/><h3>{data.candidates.find(c=>c.id===exam.candidateId)?.name} · {exam.name}</h3><div className="tags"><Badge>{examStates[exam.status]}</Badge><Badge>{exam.allowAI?'允许 AI':'不允许 AI'}</Badge><Badge warn={exam.usedAI&&!exam.allowAI}>{exam.usedAI?'候选人披露使用 AI':'未披露使用 AI'}</Badge></div><p className="muted">开始：{date(exam.startedAt)}<br/>截止：{date(exam.deadlineAt)}<br/>提交：{date(exam.submittedAt)}<br/>{exam.recordSwitch?'页面隐藏 '+exam.switchCount+' 次（仅供人工参考，不代表作弊）':'未开启切屏记录'}</p>{exam.status==='submitted'?<><Form disabled={Boolean(exam.feedback)} key={exam.feedback?.publishedAt||mine?.version||'new'} initial={{version:mine?.version??0,ratings:mine?.ratings||{},recommendation:mine?.recommendation||'建议补充考察',note:mine?.note||''}} fields={[]} submit="保存我的人工复核" onSubmit={async values=>{await mutate('/api/exams/'+exam.id+'/review','PUT',values,'人工复核已保存');await load();}}>{(values,change)=><>{exam.questions.map((q,index)=><section className="answer-review" key={q.id}><h3>{index+1}. {q.title}</h3><p className="muted">{q.competency} · {q.type}</p><div className="answer-text">{exam.answers[q.id]||'（未作答）'}</div><details><summary>评分要点</summary><p className="pre-wrap">{q.rubric}</p></details><Field label="本题评分（1 最低，5 最高）"><select required disabled={Boolean(exam.feedback)} value={values.ratings[q.id]||''} onChange={e=>change('ratings',{...values.ratings,[q.id]:Number(e.target.value)})}><option value="">请选择分数</option>{[1,2,3,4,5].map(n=><option key={n} value={n}>{n} 分</option>)}</select></Field></section>)}<Field label="推进建议（仅内部可见）"><select disabled={Boolean(exam.feedback)} value={values.recommendation} onChange={e=>change('recommendation',e.target.value)}>{['建议面试','建议补充考察','不建议推进'].map(s=><option key={s}>{s}</option>)}</select></Field><Field label="人工复核说明（仅内部可见）"><textarea required disabled={Boolean(exam.feedback)} rows={4} maxLength={5000} value={values.note} onChange={e=>change('note',e.target.value)}/></Field>{exam.feedback&&<p className="alert">反馈已发布。需 HR 撤回后才能修改复核。</p>}</>}</Form><Panel title={'人工复核记录（'+exam.reviews.length+' 份）'}><div className="stack pad">{exam.reviews.map(r=><div className="evidence" key={r.id}><strong>{r.reviewer} · {r.recommendation}</strong><p className="muted">{exam.questions.map((q,index)=>"第 "+(index+1)+" 题："+(r.ratings[q.id]??"未评分")+" / 5").join(" · ")}</p><p className="pre-wrap">{r.note}</p><small>{date(r.updatedAt)} · 平均 {(Object.values(r.ratings).reduce((a,b)=>a+b,0)/Object.values(r.ratings).length).toFixed(1)} / 5</small></div>)}</div></Panel>{exam.feedback?<Panel title="已发布给候选人的反馈"><div className="stack pad"><p>{exam.feedback.message}</p><p>人工评分 {exam.feedback.score} / 100 · {exam.feedback.basis}</p>{hr&&<Button secondary onClick={async()=>{try{await mutate('/api/exams/'+exam.id+'/feedback','DELETE',undefined,'反馈已撤回');await load();}catch(e){setError(e);}}}>撤回反馈</Button>}</div></Panel>:hr&&exam.reviews.length>0&&<Form initial={{message:''}} fields={[textField('message','向候选人发布的反馈',5000,{type:'textarea',hint:'候选人只能看到此处文字和人工评分，不会看到内部评语。'})]} submit="发布反馈给候选人" onSubmit={async values=>{await mutate('/api/exams/'+exam.id+'/feedback','POST',values,'反馈已发布');await load();}}/>}<Button secondary onClick={()=>window.print()}>打印答卷 / 保存 PDF</Button></>:<div className="alert">{exam.status==='in_progress'?'候选人正在作答，提交后可查看答卷并复核。':'测评尚未提交，暂无可复核答卷。'}</div>}{hr&&['invited','in_progress'].includes(exam.status)&&<Button danger onClick={()=>open('撤销测评',<Confirm danger message="撤销后候选人的邀请和会话立即失效，无法继续提交。确认撤销？" action={async()=>{await mutate('/api/exams/'+exam.id+'/revoke','POST',undefined,'测评已撤销');close();await refresh();}}/>)}>撤销测评邀请</Button>}</div>;
+function Exams() {
+  const { data, open } = useWorkspace();
+  const [status, setStatus] = useState('');
+  return <>
+    <Heading title="测评与人工复核" description="按创建时的题目与评分要点复核。"/>
+    <ReviewTasks refreshKey={data} openExam={examId => open('测评答卷与人工复核', <ExamDetail examId={examId}/>)}/>
+    <Panel>
+      <div className="filter-bar">
+        <select aria-label="测评状态" value={status} onChange={e => setStatus(e.target.value)}>
+          <option value="">全部状态</option>
+          {Object.entries(examStates).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+        </select>
+      </div>
+      <ExamTable exams={data.exams.filter(exam => !status || exam.status === status)}/>
+    </Panel>
+  </>;
+}
+
+function ExamDetail({ examId }) {
+  const { data, hr, mutate, open, close, refresh } = useWorkspace();
+  const [exam, setExam] = useState(null), [error, setError] = useState('');
+  const route = '/api/exams/' + examId;
+  const load = useCallback(async () => setExam(await api(route)), [route]);
+  useEffect(() => { load().catch(setError); }, [load]);
+  if (!exam) return <><ErrorBox error={error}/>{!error && <Loading/>}</>;
+
+  const workflow = exam.workflow;
+  const mine = workflow ? workflow.mine : exam.reviews.find(review => review.userId === data.user.id);
+  const candidate = data.candidates.find(person => person.id === exam.candidateId);
+  const submitted = exam.status === 'submitted';
+  const canPublish = hr && (workflow ? workflow.canPublish : exam.reviews.length > 0);
+  const canEditPlan = hr && !workflow && !exam.feedback && !exam.reviews.length
+    && ['invited', 'in_progress', 'submitted'].includes(exam.status);
+  const backToExam = () => open('测评答卷与人工复核', <ExamDetail examId={examId}/>);
+
+  function editPlan() {
+    open('安排独立评审', <ReviewPlanForm exam={exam} ownerId={data.user.id} save={async values => {
+      await mutate(route + '/review-plan', 'PUT', values, '评审安排已保存');
+      backToExam();
+    }}/>);
+  }
+
+  function recordFollowUp(action) {
+    const labels = {
+      nudge: ['登记催办', '确认已催办评审或招聘决定？'],
+      notified: ['登记反馈已通知', '确认已向候选人发送当前版本的反馈？'],
+      confirmed: ['登记候选人确认', '确认候选人已告知 HR 可以查看当前反馈？']
+    };
+    const [label, message] = labels[action];
+    open(label, <Confirm message={message} action={async () => {
+      const path = action === 'nudge' ? '/review-nudge' : '/feedback-notice';
+      const body = action === 'nudge' ? undefined : { confirmed: action === 'confirmed' };
+      await mutate(route + path, 'POST', body, '记录已保存');
+      backToExam();
+    }}/>);
+  }
+
+  function adjustDuration() {
+    open('调整作答时长', <Form initial={{ duration: exam.duration, reason: '' }} fields={[
+      { key: 'duration', label: '新时长（分钟）', type: 'number', required: true, min: 1, max: 480 },
+      textField('reason', '调整原因', 500)
+    ]} onSubmit={async values => {
+      await mutate(route + '/duration', 'PUT', { ...values, previous: exam.duration }, '作答时长已更新');
+      backToExam();
+    }}/>);
+  }
+
+  function reopen(task) {
+    open('重新打开复核', <Form initial={{ reason: '' }}
+      fields={[textField('reason', '重新打开原因', 500)]}
+      submit="重新打开" onSubmit={async ({ reason }) => {
+        await mutate(route + '/review-reopen', 'POST', { taskId: task.id, version: task.version, reason }, '复核已重新打开');
+        backToExam();
+      }}/>);
+  }
+
+  async function publish(values) {
+    await mutate(route + '/feedback', 'POST', values, '反馈已发布');
+    await load();
+  }
+
+  function showAnswers(values, change) {
+    return exam.questions.map((question, index) => <section className="answer-review" key={question.id}>
+      <h3>{index + 1}. {question.title}</h3>
+      <p className="muted">{question.competency} · {question.type}</p>
+      <div className="answer-text">{exam.answers[question.id] || '（未作答）'}</div>
+      <details><summary>评分要点</summary><p className="pre-wrap">{question.rubric}</p></details>
+      {change && <Field label="本题评分（1 最低，5 最高）">
+        <select required={!workflow} value={values.ratings[question.id] || ''} onChange={event => change('ratings', {
+          ...values.ratings, [question.id]: Number(event.target.value)
+        })}>
+          <option value="">请选择分数</option>
+          {[1, 2, 3, 4, 5].map(score => <option key={score} value={score}>{score} 分</option>)}
+        </select>
+      </Field>}
+    </section>);
+  }
+
+  return <div className="stack report-print">
+    <ErrorBox error={error}/>
+    <h3>{candidate?.name} · {exam.name}</h3>
+    <div className="tags">
+      <Badge>{examStates[exam.status]}</Badge>
+      <Badge>{exam.allowAI ? '允许 AI' : '不允许 AI'}</Badge>
+      <Badge warn={exam.usedAI && !exam.allowAI}>{exam.usedAI ? '候选人披露使用 AI' : '未披露使用 AI'}</Badge>
+    </div>
+    <p className="muted">开始 {date(exam.startedAt)}<br/>截止 {date(exam.deadlineAt)}<br/>提交 {date(exam.submittedAt)}<br/>
+      {exam.recordSwitch ? '页面隐藏 ' + exam.switchCount + ' 次，仅供人工参考' : '未开启切屏记录'}
+    </p>
+    {hr && exam.status === 'invited' && <div className="inline-actions">
+      <Button secondary onClick={adjustDuration}>调整作答时长</Button>
+      {!exam.operationalEvents.some(event => event.action === 'exam.invite.manual') && <Button secondary onClick={() =>
+        open('登记手动通知', <Confirm message="确认已通过可信渠道把邀请发给候选人？" action={async () => {
+          await mutate(route + '/manual-notice', 'POST', undefined, '已登记手动通知');
+          backToExam();
+        }}/>)
+      }>登记手动通知</Button>}
+    </div>}
+    {hr && exam.mailStatus === 'unknown' && <p className="muted">邀请邮件结果未知，请核实收件情况。</p>}
+    {hr && exam.operationalEvents.length > 0 && <details>
+      <summary>通知与调整记录</summary>
+      <ul>{exam.operationalEvents.map((event, index) => <li key={index}>
+        {date(event.at)} · {event.action === 'exam.invite.manual' ? 'HR 已登记手动通知' :
+          event.action === 'exam.invite.opened' ? '候选人入口首次打开' :
+          event.action === 'exam.email' ? ({ accepted: 'SMTP 已接受', failed: 'SMTP 明确失败', unknown: 'SMTP 发送结果未知' })[event.details.mailStatus] :
+          event.action === 'review.nudge' ? 'HR 已登记催办' :
+          event.action === 'feedback.notice.manual' ? '已登记手动通知反馈' :
+          event.action === 'feedback.notice.confirmed' ? '已登记候选人确认可查看反馈' :
+          '作答时长从 ' + event.details.previous + ' 分钟调整为 ' + event.details.duration + ' 分钟 · ' + event.details.reason}
+      </li>)}</ul>
+    </details>}
+    {hr && submitted && !exam.feedback && <Button secondary onClick={() => recordFollowUp('nudge')}>登记催办</Button>}
+    {canEditPlan && <Button secondary onClick={editPlan}>安排独立评审</Button>}
+    <WorkflowStatus exam={exam} hr={hr} edit={editPlan} reopen={reopen}/>
+    {submitted && <>
+      {exam.canReview ? <Form key={(mine?.id ?? 'new') + ':' + (mine?.version ?? 0)} initial={{
+        taskId: workflow ? mine.id : undefined, version: mine?.version ?? 0,
+        ratings: mine?.ratings ?? {}, recommendation: mine?.recommendation ?? '建议补充考察',
+        note: mine?.note ?? '', intent: workflow ? 'draft' : 'submit'
+      }} submit={workflow ? '保存复核' : '保存我的人工复核'} onSubmit={async values => {
+        const ratings = Object.fromEntries(Object.entries(values.ratings).filter(([, score]) => score));
+        await mutate(route + '/review', 'PUT', { ...values, ratings }, values.intent === 'submit' ? '人工复核已提交' : '草稿已保存');
+        await load();
+      }}>{(values, change) => <>
+        {showAnswers(values, change)}
+        <Field label="推进建议（仅内部可见）">
+          <select value={values.recommendation} onChange={event => change('recommendation', event.target.value)}>
+            {['建议面试', '建议补充考察', '不建议推进'].map(item => <option key={item}>{item}</option>)}
+          </select>
+        </Field>
+        <Field label="人工复核说明（仅内部可见）">
+          <textarea required={!workflow || values.intent === 'submit'} rows={4} maxLength={5000} value={values.note}
+            onChange={event => change('note', event.target.value)}/>
+        </Field>
+        {workflow && <Field label="复核保存方式">
+          <select value={values.intent} onChange={event => change('intent', event.target.value)}>
+            <option value="draft">保存草稿</option><option value="submit">独立提交</option>
+          </select>
+        </Field>}
+      </>}</Form> : showAnswers()}
+      <Panel title={'人工复核记录（' + exam.reviews.length + ' 份）'}>
+        <div className="stack pad">{exam.reviews.map(review => <div className="evidence" key={review.id}>
+          <strong>{review.reviewer} · {review.recommendation}</strong>
+          <p className="muted">{exam.questions.map((question, index) => '第 ' + (index + 1) + ' 题：' + (review.ratings[question.id] ?? '未评分') + ' / 5').join(' · ')}</p>
+          <p className="pre-wrap">{review.note}</p>
+          <small>{date(review.updatedAt)} · 平均 {(Object.values(review.ratings).reduce((a, b) => a + b, 0) / Object.values(review.ratings).length).toFixed(1)} / 5</small>
+        </div>)}</div>
+      </Panel>
+      {exam.feedback && <Panel title="已发布给候选人的反馈"><div className="stack pad">
+        <p>{exam.feedback.message}</p><p>人工评分 {exam.feedback.score} / 100 · {exam.feedback.basis}</p>
+        {hr && <p className="muted">{exam.feedbackFirstAccessAt ? '首次结果访问 ' + date(exam.feedbackFirstAccessAt) : '暂无候选人结果访问记录'}</p>}
+        {hr && <div className="inline-actions">
+          <Button secondary onClick={() => recordFollowUp('notified')}>登记反馈已通知</Button>
+          <Button secondary onClick={() => recordFollowUp('confirmed')}>登记候选人确认</Button>
+        </div>}
+        {hr && <FeedbackLinkActions issue={() => api(route + '/feedback-link', { method: 'POST' })}
+          revoke={() => api(route + '/feedback-link', { method: 'DELETE' })}/>}
+        {hr && <Button secondary onClick={async () => {
+          try { await mutate(route + '/feedback', 'DELETE', undefined, '反馈已撤回'); await load(); }
+          catch (error) { setError(error); }
+        }}>撤回反馈</Button>}
+      </div></Panel>}
+      {!exam.feedback && canPublish && (workflow ? <DecisionForm exam={exam} publish={publish}/> :
+        <Form initial={{ message: '' }} fields={[textField('message', '向候选人发布的反馈', 5000, { type: 'textarea' })]}
+          submit="发布反馈给候选人" onSubmit={publish}/>)}
+      <Button secondary onClick={() => window.print()}>打印答卷 / 保存 PDF</Button>
+    </>}
+    {!submitted && <div className="alert">{exam.status === 'in_progress' ? '候选人正在作答，提交后可查看答卷并复核。' : '测评尚未提交，暂无可复核答卷。'}</div>}
+    {hr && ['invited', 'in_progress'].includes(exam.status) && <Button danger onClick={() => open('撤销测评',
+      <Confirm danger message="撤销后候选人的邀请和会话立即失效，无法继续提交。确认撤销？"
+        action={async () => { await mutate(route + '/revoke', 'POST', undefined, '测评已撤销'); close(); await refresh(); }}/>
+    )}>撤销测评邀请</Button>}
+  </div>;
 }
 function SettingsPage(){
-  const {data,mutate,open,close}=useWorkspace();const [admin,setAdmin]=useState(null),[error,setError]=useState('');const load=()=>api('/api/admin').then(setAdmin);useEffect(()=>{if(data.user.role==='admin')load().catch(setError);},[data.user.role]);
-  function createUser(){open('创建企业账号',<Form initial={{name:'',email:'',password:'',role:'hr',department:''}} fields={[textField('name','姓名'),textField('email','工作邮箱',254,{type:'email'}),textField('password','临时密码（至少 12 位，首次登录必须更换）',128,{type:'password',minLength:12,autoComplete:'new-password'}),{key:'role',label:'账号角色',type:'select',options:Object.entries(roles).map(([value,label])=>({value,label}))},{key:'department',label:'所属部门（部门复核人必填，须与岗位部门一致）',maxLength:100}]} onSubmit={async values=>{await mutate('/api/admin/users','POST',values,'账号已创建，请通过安全渠道告知临时密码');await load();close();}}/>);}
-  return <><Heading title="设置与账号" description="连接能力和安全状态如实显示；敏感凭证只在服务器环境中配置。"/><Panel title="当前工作区"><div className="stack pad"><p>企业：{data.company}</p><p>当前身份：{data.user.name} · {roles[data.user.role]}</p><p>AI：{data.readiness.ai?'已配置，连通性以实际请求为准':'未配置，可使用关键词分析'}</p><p>邮件：{data.readiness.email?'已配置，送达需邮箱回执确认':'未配置，可复制邀请链接发送'}</p><p>传输：{data.readiness.secure?'配置为 HTTPS':'本地 HTTP；正式使用前须配置 HTTPS'}</p><p className="muted">本版本面向单企业、单实例部署。管理员应按资料保留制度删除过期候选人资料，并定期完成备份和恢复演练。</p></div></Panel><ErrorBox error={error}/>{data.user.role==='admin'&&<><Panel title="企业账号" actions={<Button onClick={createUser}><Plus size={16}/>创建账号</Button>}>{!admin?<Loading/>:<div className="table-scroll"><table className="business-table"><thead><tr><th>姓名 / 邮箱</th><th>角色 / 部门</th><th>状态</th><th>操作</th></tr></thead><tbody>{admin.users.map(u=><tr key={u.id}><td>{u.name}<small>{u.email}</small></td><td>{roles[u.role]}<small>{u.department||'全部部门'}</small></td><td><Badge warn={!u.active}>{u.active?'启用':'停用'}</Badge>{u.mustChange&&<small>需修改密码</small>}</td><td><div className="inline-actions"><button disabled={u.id===data.user.id} className="text-button" onClick={()=>open(u.active?'停用账号':'启用账号',<Confirm message={u.active?'停用后将立即注销该账号的所有登录。':'确认重新启用该账号？'} action={async()=>{await mutate('/api/admin/users/'+u.id,'PATCH',{active:!u.active});await load();close();}}/>)}>{u.active?'停用':'启用'}</button><button className="text-button" onClick={()=>open('重置账号密码',<Form initial={{password:''}} fields={[textField('password','新的临时密码',128,{type:'password',minLength:12,autoComplete:'new-password'})]} onSubmit={async values=>{await mutate('/api/admin/users/'+u.id,'PATCH',values,'密码已重置，该账号所有会话已注销');await load();close();}}/>)}>重置密码</button></div></td></tr>)}</tbody></table></div>}</Panel><Panel title="最近操作审计（最多 200 条）">{admin&&<div className="table-scroll audit-scroll"><table className="business-table"><thead><tr><th>时间</th><th>操作人</th><th>操作</th><th>资源编号</th></tr></thead><tbody>{admin.audit.map(a=><tr key={a.id}><td>{date(a.created_at)}</td><td>{a.actor||a.actor_id}</td><td>{a.action}</td><td><code>{a.resource_id}</code></td></tr>)}</tbody></table></div>}</Panel></>}</>;
+  const {data,mutate,open,close}=useWorkspace();
+  const [admin,setAdmin]=useState(null),[error,setError]=useState('');
+  const [auditFilters, setAuditFilters] = useState({});
+  const load = useCallback((filters) => {
+    const query = new URLSearchParams(Object.entries(filters).filter(([, value]) => value));
+    return api('/api/admin' + (query.size ? '?' + query : '')).then(setAdmin);
+  }, []);
+  useEffect(() => {
+    if (data.user.role === 'admin') load({}).catch(setError);
+  }, [data.user.role, load]);
+  function createUser(){open('创建企业账号',<Form initial={{name:'',email:'',password:'',role:'hr',department:''}} fields={[textField('name','姓名'),textField('email','工作邮箱',254,{type:'email'}),textField('password','临时密码（至少 12 位，首次登录必须更换）',128,{type:'password',minLength:12,autoComplete:'new-password'}),{key:'role',label:'账号角色',type:'select',options:Object.entries(roles).map(([value,label])=>({value,label}))},{key:'department',label:'所属部门（部门复核人必填，须与岗位部门一致）',maxLength:100}]} onSubmit={async values=>{await mutate('/api/admin/users','POST',values,'账号已创建，请通过安全渠道告知临时密码');await load(auditFilters);close();}}/>);}
+  return <><Heading title="设置与账号" description="连接能力和安全状态如实显示；敏感凭证只在服务器环境中配置。"/><Panel title="当前工作区"><div className="stack pad"><p>企业：{data.company}</p><p>当前身份：{data.user.name} · {roles[data.user.role]}</p><p>AI：{data.readiness.ai?'已配置，连通性以实际请求为准':'未配置，可使用关键词分析'}</p><p>邮件：{data.readiness.email?'已配置，送达需邮箱回执确认':'未配置，可复制邀请链接发送'}</p><p>传输：{data.readiness.secure?'配置为 HTTPS':'本地 HTTP；正式使用前须配置 HTTPS'}</p><p className="muted">本版本面向单企业、单实例部署。管理员应按资料保留制度删除过期候选人资料，并定期完成备份和恢复演练。</p></div></Panel><ErrorBox error={error}/>{data.user.role==='admin'&&<><Panel title="企业账号" actions={<Button onClick={createUser}><Plus size={16}/>创建账号</Button>}>{!admin?<Loading/>:<div className="table-scroll"><table className="business-table"><thead><tr><th>姓名 / 邮箱</th><th>角色 / 部门</th><th>状态</th><th>操作</th></tr></thead><tbody>{admin.users.map(u=><tr key={u.id}><td>{u.name}<small>{u.email}</small></td><td>{roles[u.role]}<small>{u.department||'全部部门'}</small></td><td><Badge warn={!u.active}>{u.active?'启用':'停用'}</Badge>{u.mustChange&&<small>需修改密码</small>}</td><td><div className="inline-actions"><button disabled={u.id===data.user.id} className="text-button" onClick={()=>open(u.active?'停用账号':'启用账号',<Confirm message={u.active?'停用后将立即注销该账号的所有登录。':'确认重新启用该账号？'} action={async()=>{await mutate('/api/admin/users/'+u.id,'PATCH',{active:!u.active});await load(auditFilters);close();}}/>)}>{u.active?'停用':'启用'}</button><button className="text-button" onClick={()=>open('重置账号密码',<Form initial={{password:''}} fields={[textField('password','新的临时密码',128,{type:'password',minLength:12,autoComplete:'new-password'})]} onSubmit={async values=>{await mutate('/api/admin/users/'+u.id,'PATCH',values,'密码已重置，该账号所有会话已注销');await load(auditFilters);close();}}/>)}>重置密码</button></div></td></tr>)}</tbody></table></div>}</Panel><Panel title="操作审计">
+    {admin ? <div className="pad">
+      <Form initial={{ resourceId: '', from: '', to: '' }} fields={[
+        { key: 'resourceId', label: '资源编号', maxLength: 200 },
+        { key: 'from', label: '起始日期（UTC）', type: 'date' },
+        { key: 'to', label: '结束日期（UTC）', type: 'date' }
+      ]} submit="查询审计" onSubmit={async values => {
+        const filters = { ...values, resourceId: values.resourceId.trim() };
+        await load(filters);
+        setAuditFilters(filters);
+        setError('');
+      }}/>
+      {admin?.audit.length === 200 && <p className="muted">显示最近 200 条匹配记录。可缩小日期范围或指定资源编号。</p>}
+    </div> : <Loading/>}
+    {admin?.audit.length === 0 && <Empty>没有匹配的审计记录。</Empty>}
+    {admin?.audit.length > 0 && <div className="table-scroll audit-scroll"><table className="business-table"><thead><tr><th>时间</th><th>操作人</th><th>操作</th><th>资源编号</th></tr></thead><tbody>{admin.audit.map(a=><tr key={a.id}><td>{date(a.created_at)}</td><td>{a.actor||a.actor_id}</td><td>{a.action}</td><td><code>{a.resource_id}</code></td></tr>)}</tbody></table></div>}</Panel></>}</>;
 }
