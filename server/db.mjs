@@ -50,6 +50,44 @@ export function openDatabase(dataDir) {
       INSERT OR IGNORE INTO migrations VALUES(4, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
     `);
   });
+  transaction(db, () => db.exec(`
+    CREATE TABLE IF NOT EXISTS review_plans(
+      exam_id TEXT PRIMARY KEY REFERENCES exams(id) ON DELETE CASCADE,
+      owner_id TEXT NOT NULL REFERENCES users(id),
+      due_at TEXT NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS review_tasks(
+      id TEXT PRIMARY KEY,
+      exam_id TEXT NOT NULL REFERENCES review_plans(exam_id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id),
+      active INTEGER NOT NULL DEFAULT 1,
+      ratings TEXT NOT NULL DEFAULT '{}',
+      recommendation TEXT NOT NULL DEFAULT '建议补充考察',
+      note TEXT NOT NULL DEFAULT '',
+      version INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT NOT NULL,
+      submitted_at TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS active_review_assignment ON review_tasks(exam_id, user_id) WHERE active=1;
+    CREATE INDEX IF NOT EXISTS review_tasks_user ON review_tasks(user_id, exam_id) WHERE active=1;
+    CREATE TABLE IF NOT EXISTS review_workflow_events(
+      id INTEGER PRIMARY KEY,
+      exam_id TEXT NOT NULL REFERENCES review_plans(exam_id) ON DELETE CASCADE,
+      actor_id TEXT NOT NULL REFERENCES users(id),
+      action TEXT NOT NULL,
+      details TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS review_events_exam ON review_workflow_events(exam_id, id);
+    CREATE TABLE IF NOT EXISTS feedback_links(
+      exam_id TEXT PRIMARY KEY REFERENCES exams(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL UNIQUE,
+      feedback_hash TEXT NOT NULL,
+      expires_at TEXT NOT NULL
+    );
+    INSERT OR IGNORE INTO migrations VALUES(5, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+  `));
   return db;
 }
 export function transaction(db, fn) { db.exec('BEGIN IMMEDIATE'); try { const result = fn(); db.exec('COMMIT'); return result; } catch (error) { db.exec('ROLLBACK'); throw error; } }

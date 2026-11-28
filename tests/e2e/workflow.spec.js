@@ -159,3 +159,89 @@ test('保存失败后退出保留草稿，下载本地副本后可退出', async
     expect(result.body.status).toBe('in_progress');
   } finally { await staff.close(); await candidate.close(); }
 });
+
+test('我的待办与独立评审走通发布、只读结果和撤回', async ({ browser }) => {
+  const contexts = await Promise.all([
+    browser.newContext(), browser.newContext(), browser.newContext(),
+    browser.newContext({ viewport: { width: 390, height: 844 } })
+  ]);
+  try {
+    const [hr, reviewer, second, candidate] = await Promise.all(contexts.map(context => context.newPage()));
+    await login(hr, 'hr');
+    const business = await setupBusiness(apiClient(hr.request));
+    const hrApi = apiClient(hr.request);
+    const response = await hrApi.call('/api/candidates/' + business.candidateId);
+    expect(response.status).toBe(200);
+    const changed = await hrApi.call('/api/candidates/' + business.candidateId, 'PUT', {
+      ...response.body, name: '独立评审流程候选人'
+    });
+    expect(changed.status).toBe(200);
+    const link = await invite(hrApi, business);
+
+    const openExams = page => page.getByRole('button', { name: '测评与复核', exact: true }).click();
+    const examRow = page => page.getByRole('row').filter({ hasText: '独立评审流程候选人' });
+    await hr.getByRole('button', { name: '刷新工作区' }).click();
+    await openExams(hr);
+    await examRow(hr).getByRole('button', { name: '查看测评' }).click();
+    await hr.getByRole('button', { name: '安排独立评审' }).click();
+    const plan = hr.getByRole('dialog', { name: '安排独立评审' });
+    await plan.getByLabel('安排或变更原因').fill('验证盲评与跟进');
+    await plan.getByLabel(/department测试账号/).check();
+    await plan.getByLabel(/admin测试账号/).check();
+    await plan.getByRole('button', { name: '保存评审安排' }).click();
+    await expect(hr.getByText(/已提交 0 \/ 2 份/)).toBeVisible();
+
+    await candidate.goto(link.inviteUrl);
+    await candidate.getByLabel('我已阅读测评规则', { exact: false }).check();
+    await candidate.getByRole('button', { name: '同意并开始测评' }).click();
+    await candidate.getByLabel('第 1 题答案').fill('仅答卷可见的内容');
+    await candidate.getByRole('button', { name: '提交测评', exact: true }).click();
+    await candidate.getByRole('button', { name: '确认提交' }).click();
+    await expect(candidate.getByRole('heading', { name: '测评已提交' })).toBeVisible();
+
+    await login(reviewer, 'department');
+    await login(second, 'admin');
+    await openExams(reviewer);
+    await openExams(second);
+    const task = page => page.getByRole('row').filter({ hasText: '独立评审流程候选人' }).getByRole('button', { name: '填写复核' });
+    const review = reviewer.getByRole('dialog');
+    await task(reviewer).click();
+    await review.getByLabel('本题评分（1 最低，5 最高）').selectOption('4');
+    await review.getByLabel('人工复核说明（仅内部可见）').fill('部门内部评语');
+    await review.getByLabel('复核保存方式').selectOption('submit');
+    await review.getByRole('button', { name: '保存复核', exact: true }).click();
+    await expect(review.getByText(/我的复核已提交/)).toBeVisible();
+
+    await task(second).click();
+    const secondReview = second.getByRole('dialog');
+    await expect(secondReview.getByText(/已提交 1 \/ 2 份/)).toBeVisible();
+    await expect(secondReview.getByText('部门内部评语')).toHaveCount(0);
+    await secondReview.getByLabel('本题评分（1 最低，5 最高）').selectOption('4');
+    await secondReview.getByLabel('人工复核说明（仅内部可见）').fill('管理员独立评语');
+    await secondReview.getByLabel('复核保存方式').selectOption('submit');
+    await secondReview.getByRole('button', { name: '保存复核', exact: true }).click();
+    await expect(secondReview.getByText('部门内部评语')).toBeVisible();
+
+    await hr.getByRole('button', { name: '关闭弹窗' }).click();
+    await examRow(hr).getByRole('button', { name: '查看测评' }).click();
+    const decision = hr.getByRole('dialog');
+    await decision.getByLabel('决定理由', { exact: true }).fill('内部决定说明');
+    await decision.getByLabel('关联答卷题目').selectOption(business.questionId);
+    await decision.getByLabel('这份作答如何支持决定').fill('内部证据');
+    await decision.getByLabel('向候选人发布的反馈').fill('感谢完成测评');
+    await decision.getByRole('button', { name: '记录决定并发布反馈' }).click();
+    await decision.getByRole('button', { name: '生成或补发只读结果链接' }).click();
+    const resultLink = await decision.getByLabel('候选人只读结果链接').inputValue();
+    await candidate.goto(resultLink);
+    await expect(candidate.getByText('感谢完成测评')).toBeVisible();
+    await expect(candidate.getByText('仅答卷可见的内容')).toHaveCount(0);
+    await expect(candidate.getByText('内部决定说明')).toHaveCount(0);
+    await expect(candidate).toHaveURL(/#\/result$/);
+    await decision.getByRole('button', { name: '撤回反馈', exact: true }).click();
+    await expect(decision.getByRole('heading', { name: '已发布给候选人的反馈' })).toHaveCount(0);
+    await candidate.goto(resultLink);
+    await expect(candidate.getByRole('alert')).toContainText('反馈链接已失效');
+  } finally {
+    await Promise.all(contexts.map(context => context.close()));
+  }
+});
