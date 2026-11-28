@@ -54,6 +54,7 @@ docker build -t talentdesk:pilot .
 docker run --rm --network none --no-healthcheck --read-only \
   --tmpfs /tmp:rw,size=512m \
   --mount "type=bind,source=$PWD/tests,target=/app/tests,readonly" \
+  --mount "type=bind,source=$PWD/scripts/capacity-pilot.mjs,target=/app/scripts/capacity-pilot.mjs,readonly" \
   --entrypoint node talentdesk:pilot scripts/capacity-pilot.mjs --seconds 5 --rounds 1
 ```
 
