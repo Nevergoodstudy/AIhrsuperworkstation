@@ -58,6 +58,8 @@ function assertPreserved(db, before, { clearedSessions = false } = {}) {
   assert.deepEqual(db.prepare('SELECT * FROM migrations WHERE version<=3 ORDER BY version').all().map(row => ({ ...row })), before.migrations);
   assert.equal(db.prepare('SELECT count(*) AS n FROM migrations WHERE version=4').get().n, 1);
   assert.equal(db.prepare('SELECT count(*) AS n FROM migrations WHERE version=5').get().n, 1);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM migrations WHERE version=6').get().n, 1);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM job_review_policies').get().n, 0);
   assert.equal(db.prepare('SELECT count(*) AS n FROM review_plans').get().n, 0);
   assert.equal(db.prepare('PRAGMA foreign_key_check').all().length, 0);
   assert.deepEqual(db.prepare('PRAGMA integrity_check').all().map(row => Object.values(row)[0]), ['ok']);
@@ -107,7 +109,7 @@ async function startCurrent(dataDir) {
   return { service, call, async stop() { await new Promise(resolve => server.close(resolve)); service.close(); } };
 }
 
-test('真实 v3 库迁移到 v5：历史值保持、无伪造归属和事件、重复打开幂等', { timeout: 20000 }, async t => {
+test('真实 v3 库迁移到 v6：历史值保持、无伪造归属和事件、重复打开幂等', { timeout: 20000 }, async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'talent-migration-v3-'));
   let current;
   t.after(async () => { try { await current?.stop(); } finally { await rm(root, { recursive: true, force: true }); } });

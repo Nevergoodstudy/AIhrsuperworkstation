@@ -5,13 +5,15 @@ import { Badge, Button, Empty, ErrorBox, Field, Form, Loading, Panel } from './u
 const followUpLabel = '跟进复核与发布';
 
 export function ReviewTasks({ openExam, refreshKey }) {
-  const [tasks, setTasks] = useState(null);
+  const [page, setPage] = useState(null);
   const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
   useEffect(() => {
     let active = true;
+    setPage(null);
     api('/api/review-tasks').then(result => {
       if (active) {
-        setTasks(result.tasks);
+        setPage(result);
         setError('');
       }
     }).catch(error => {
@@ -20,13 +22,30 @@ export function ReviewTasks({ openExam, refreshKey }) {
     return () => { active = false; };
   }, [refreshKey]);
 
+  async function more() {
+    setBusy(true);
+    setError('');
+    try {
+      const result = await api('/api/review-tasks?' + new URLSearchParams(page.nextCursor));
+      setPage(current => {
+        if (current !== page) return current;
+        const seen = new Set(current.tasks.map(task => task.examId));
+        return { tasks: [...current.tasks, ...result.tasks.filter(task => !seen.has(task.examId))], nextCursor: result.nextCursor };
+      });
+    } catch (error) {
+      setError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return <Panel title="我的待办">
     <ErrorBox error={error}/>
-    {!tasks && !error && <Loading/>}
-    {tasks?.length === 0 && <Empty>当前没有待办。</Empty>}
-    {tasks?.length > 0 && <div className="table-scroll"><table className="business-table">
+    {!page && !error && <Loading/>}
+    {page?.tasks.length === 0 && <Empty>当前没有待办。</Empty>}
+    {page?.tasks.length > 0 && <div className="table-scroll"><table className="business-table">
       <thead><tr><th>候选人 / 测评</th><th>下一行动</th><th>复核期限</th></tr></thead>
-      <tbody>{tasks.map(task => <tr key={task.examId}>
+      <tbody>{page.tasks.map(task => <tr key={task.examId}>
         <td><strong>{task.candidateName}</strong><small>{task.examName}</small></td>
         <td><button className="text-button" onClick={() => openExam(task.examId)}>
           {task.action === 'review' ? '填写复核' : followUpLabel}
@@ -34,6 +53,7 @@ export function ReviewTasks({ openExam, refreshKey }) {
         <td>{date(task.dueAt)} {Date.parse(task.dueAt) < Date.now() && <Badge warn>已逾期</Badge>}</td>
       </tr>)}</tbody>
     </table></div>}
+    {page?.nextCursor && <div className="pad"><Button secondary disabled={busy} onClick={more}>加载更多待办</Button></div>}
   </Panel>;
 }
 
@@ -63,21 +83,61 @@ export function ReviewPlanForm({ exam, ownerId, save }) {
     { key: 'reason', label: '安排或变更原因', maxLength: 500, required: true }
   ]} submit="保存评审安排" onSubmit={async values => {
     await save({ ...values, dueAt: new Date(values.dueAt).toISOString(), version: workflow?.version ?? 0 });
-  }}>{(values, change) => <fieldset className="stack">
+  }}>{(values, change) => <ReviewerChoices people={people} assignments={workflow?.assignments} selected={values.reviewerIds}
+    onChange={reviewerIds => change('reviewerIds', reviewerIds)}/>}</Form>;
+}
+
+function ReviewerChoices({ people, assignments = [], selected, onChange }) {
+  const choices = people.map(person => ({ id: person.id, label: person.name + ' · ' + roles[person.role] }));
+  const available = new Set(choices.map(person => person.id));
+  for (const person of assignments) {
+    if (!available.has(person.userId)) choices.push({ id: person.userId, label: (person.reviewer ?? person.userId) + ' · 已失效' });
+  }
+  return <fieldset className="stack">
     <legend>必要评审人</legend>
-    {[
-      ...people.map(person => ({ id: person.id, label: person.name + ' · ' + roles[person.role] })),
-      ...(workflow?.assignments.filter(task => !task.eligible).map(task => ({
-        id: task.userId, label: task.reviewer + ' · 失效，请取消并改派'
-      })) ?? [])
-    ].map(person => <label key={person.id} className="check-line">
-      <input type="checkbox" checked={values.reviewerIds.includes(person.id)} onChange={event => {
-        change('reviewerIds', event.target.checked
-          ? [...values.reviewerIds, person.id]
-          : values.reviewerIds.filter(id => id !== person.id));
-      }}/>{person.label}
+    {choices.map(person => <label key={person.id} className="check-line">
+      <input type="checkbox" checked={selected.includes(person.id)} onChange={event => onChange(event.target.checked
+        ? [...selected, person.id] : selected.filter(id => id !== person.id))}/>{person.label}
     </label>)}
-  </fieldset>}</Form>;
+  </fieldset>;
+}
+
+export function JobReviewPolicyForm({ jobId, ownerId, save }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let active = true;
+    api('/api/jobs/' + jobId + '/review-policy').then(result => {
+      if (active) setData(result);
+    }).catch(error => {
+      if (active) setError(error);
+    });
+    return () => { active = false; };
+  }, [jobId]);
+  if (error) return <ErrorBox error={error}/>;
+  if (!data) return <Loading/>;
+  const { policy, people } = data;
+  const owners = people.filter(person => person.role !== 'department');
+  return <Form initial={{
+    enabled: policy.enabled, ownerId: policy.ownerId ?? ownerId,
+    dueHours: policy.dueHours ?? 48, reviewerIds: policy.reviewerIds ?? []
+  }} fields={[{ key: 'enabled', label: '为新邀请启用独立评审', type: 'checkbox' }]}
+    onSubmit={values => save({ ...values, version: policy.version })}>
+    {(values, change) => values.enabled && <>
+      <Field label="跟进负责人">
+        <select required value={values.ownerId} onChange={event => change('ownerId', event.target.value)}>
+          {owners.map(person => <option key={person.id} value={person.id}>{person.name}</option>)}
+          {!owners.some(person => person.id === values.ownerId) && <option value={values.ownerId}>原负责人已失效</option>}
+        </select>
+      </Field>
+      <Field label="提交后的复核期限（小时）">
+        <input required type="number" min={1} max={720} value={values.dueHours}
+          onChange={event => change('dueHours', event.target.valueAsNumber)}/>
+      </Field>
+      <ReviewerChoices people={people} assignments={(policy.reviewerIds ?? []).map(userId => ({ userId }))}
+        selected={values.reviewerIds} onChange={reviewerIds => change('reviewerIds', reviewerIds)}/>
+    </>}
+  </Form>;
 }
 
 export function DecisionForm({ exam, publish }) {
@@ -106,7 +166,7 @@ export function WorkflowStatus({ exam, hr, edit, reopen }) {
   if (!workflow) return null;
   return <Panel title="评审安排" actions={hr && !exam.feedback && <Button secondary onClick={edit}>调整评审安排</Button>}>
     <div className="stack pad">
-      <p>已提交 {workflow.submitted} / {workflow.required} 份 · 期限 {date(workflow.dueAt)}</p>
+      <p>已提交 {workflow.submitted} / {workflow.required} 份 · {workflow.dueHours ? '提交后 ' + workflow.dueHours + ' 小时内复核' : '期限 ' + date(workflow.dueAt)}</p>
       {workflow.ownerName && <p>跟进负责人 {workflow.ownerName}</p>}
       {workflow.mine?.submittedAt && <p>我的复核已提交 · {date(workflow.mine.submittedAt)}</p>}
       {workflow.assignments?.map(task => <div key={task.id} className="inline-actions">

@@ -14,13 +14,13 @@ const ratingSchema = z.object({
   note: text(5000),
   intent: z.enum(['draft', 'submit']).default('submit')
 });
-const planSchema = z.object({
-  version,
-  ownerId: uuid,
-  reviewerIds: z.array(uuid).min(1).max(10),
-  dueAt: z.iso.datetime(),
-  reason: required(500)
-});
+const reviewerSettings = { ownerId: uuid, reviewerIds: z.array(uuid).min(1).max(10) };
+const planSchema = z.object({ version, ...reviewerSettings, dueAt: z.iso.datetime(), reason: required(500) });
+const policySchema = z.discriminatedUnion('enabled', [
+  z.object({ version, enabled: z.literal(false) }),
+  z.object({ version, enabled: z.literal(true), ...reviewerSettings, dueHours: z.number().int().min(1).max(720) })
+]);
+const addHours = (time, hours) => new Date(Date.parse(time) + hours * 3600000).toISOString();
 const decisionSchema = z.object({
   version: version.positive(),
   outcome: z.enum(['进入面试', '补充考察', '停止推进']),
@@ -92,7 +92,7 @@ export function createReviewWorkflow(db) {
       reviews: tasks.filter(task => task.submitted_at && (ready || task.user_id === user.id))
         .map(task => reviewView(task, !isHr(user))),
       workflow: {
-        dueAt: plan.due_at, version: plan.version, required: tasks.length,
+        dueAt: plan.due_at, dueHours: plan.due_hours, version: plan.version, required: tasks.length,
         submitted: tasks.filter(task => task.submitted_at).length,
         canPublish: isHr(user) && ready && exam.status === 'submitted' && !exam.feedback,
         mine: mine ? { ...reviewView(mine), submittedAt: mine.submitted_at } : null,
@@ -118,31 +118,80 @@ export function createReviewWorkflow(db) {
     `, department);
   }
 
+  function checkReviewers(department, settings) {
+    const { ownerId, reviewerIds } = settings;
+    if (new Set(reviewerIds).size !== reviewerIds.length) throw fail(400, '评审人不能重复');
+    const people = new Map(options(department).map(person => [person.id, person]));
+    const owner = people.get(ownerId);
+    if (!owner || !isHr(owner)) throw fail(400, '请选择有效的 HR 或管理员作为负责人');
+    if (reviewerIds.some(userId => !people.has(userId))) throw fail(400, '评审人须为有效的内部账号，部门评审须与岗位部门一致');
+  }
+
+  function jobPolicy(jobId) {
+    const row = one('SELECT * FROM job_review_policies WHERE job_id=?', jobId);
+    return row ? { enabled: Boolean(row.enabled), version: row.version, ...json(row.settings) } : { enabled: false, version: 0 };
+  }
+
+  function configureJob(job, user, input) {
+    const { version: expected, enabled, ...settings } = policySchema.parse(input);
+    transaction(db, () => {
+      if (jobPolicy(job.id).version !== expected) throw fail(409, '岗位评审默认安排已更新，请刷新');
+      if (enabled) checkReviewers(job.department, settings);
+      run(`
+        INSERT INTO job_review_policies(job_id,enabled,settings,version) VALUES(?,?,?,1)
+        ON CONFLICT(job_id) DO UPDATE SET enabled=excluded.enabled,settings=excluded.settings,version=job_review_policies.version+1
+      `, job.id, +enabled, JSON.stringify(settings));
+      audit(db, user.id, enabled ? 'review.policy.enable' : 'review.policy.disable', job.id);
+    });
+  }
+
+  function addTask(examId, userId) {
+    run('INSERT INTO review_tasks(id,exam_id,user_id,updated_at) VALUES(?,?,?,?)', id(), examId, userId, now());
+  }
+
+  // Invitation and its required review assignments commit together.
+  function assignFromJob(examId, job, user, expiresAt) {
+    const policy = jobPolicy(job.id);
+    if (!policy.enabled) return;
+    checkReviewers(job.department, policy);
+    run('INSERT INTO review_plans(exam_id,owner_id,due_at,due_hours) VALUES(?,?,?,?)',
+      examId, policy.ownerId, addHours(expiresAt, policy.dueHours), policy.dueHours);
+    for (const userId of policy.reviewerIds) addTask(examId, userId);
+    record(examId, user.id, 'review.assign', {
+      source: 'job', policyVersion: policy.version, ownerId: policy.ownerId,
+      reviewerIds: policy.reviewerIds, dueHours: policy.dueHours
+    });
+  }
+
+  function startReviewDeadline(examId, submittedAt) {
+    const plan = planFor(examId);
+    if (!plan?.due_hours) return;
+    run('UPDATE review_plans SET due_at=?,due_hours=NULL,version=version+1 WHERE exam_id=?',
+      addHours(submittedAt, plan.due_hours), examId);
+  }
+
   function configure(exam, user, department, input) {
     const body = planSchema.parse(input);
     if (!['invited', 'in_progress', 'submitted'].includes(exam.status) || exam.feedback) {
       throw fail(409, '当前测评无法调整评审安排');
     }
-    if (new Set(body.reviewerIds).size !== body.reviewerIds.length) throw fail(400, '评审人不能重复');
     const dueAt = new Date(body.dueAt).toISOString();
     if (dueAt <= now()) throw fail(400, '请选择未来的复核期限');
     transaction(db, () => {
       const plan = planFor(exam.id);
       if ((plan?.version ?? 0) !== body.version) throw fail(409, '评审安排已更新，请刷新');
       if (!plan && one('SELECT 1 FROM reviews WHERE exam_id=? LIMIT 1', exam.id)) throw fail(409, '已有历史复核，请按原流程处理');
-      const people = new Map(options(department).map(person => [person.id, person]));
-      if (!people.has(body.ownerId) || !isHr(people.get(body.ownerId))) throw fail(400, '请选择有效的 HR 或管理员作为负责人');
-      if (body.reviewerIds.some(userId => !people.has(userId))) throw fail(400, '评审人须为有效的内部账号，部门评审须与岗位部门一致');
+      checkReviewers(department, body);
       const previous = plan ? assignments(exam.id) : [];
       run(`
         INSERT INTO review_plans(exam_id, owner_id, due_at) VALUES(?,?,?)
-        ON CONFLICT(exam_id) DO UPDATE SET owner_id=excluded.owner_id, due_at=excluded.due_at, version=review_plans.version+1
+        ON CONFLICT(exam_id) DO UPDATE SET owner_id=excluded.owner_id, due_at=excluded.due_at, due_hours=NULL, version=review_plans.version+1
       `, exam.id, body.ownerId, dueAt);
       for (const task of previous.filter(task => !body.reviewerIds.includes(task.user_id))) {
         run('UPDATE review_tasks SET active=0 WHERE id=?', task.id);
       }
       for (const userId of body.reviewerIds.filter(userId => !previous.some(task => task.user_id === userId))) {
-        run('INSERT INTO review_tasks(id,exam_id,user_id,updated_at) VALUES(?,?,?,?)', id(), exam.id, userId, now());
+        addTask(exam.id, userId);
       }
       record(exam.id, user.id, plan ? 'review.reassign' : 'review.assign', {
         reason: body.reason, before: plan ? { ownerId: plan.owner_id, dueAt: plan.due_at, reviewerIds: previous.map(task => task.user_id) } : null,
@@ -246,8 +295,11 @@ export function createReviewWorkflow(db) {
     });
   }
 
-  function tasksFor(user) {
-    return all(`
+  function tasksFor(user, cursorQuery) {
+    const cursor = z.object({ dueAt: z.iso.datetime(), examId: uuid }).optional()
+      .parse(cursorQuery.dueAt !== undefined || cursorQuery.examId !== undefined ? cursorQuery : undefined);
+    const pageSize = 100;
+    const rows = all(`
       SELECT e.id AS examId, e.name AS examName, c.name AS candidateName, p.due_at AS dueAt,
         CASE WHEN EXISTS (
           SELECT 1 FROM review_tasks m WHERE m.exam_id=e.id AND m.user_id=? AND m.active=1 AND m.submitted_at IS NULL
@@ -258,9 +310,14 @@ export function createReviewWorkflow(db) {
         AND ((? <> 'department' AND p.owner_id=?) OR EXISTS (
           SELECT 1 FROM review_tasks t WHERE t.exam_id=e.id AND t.user_id=? AND t.active=1 AND t.submitted_at IS NULL
         ))
-      ORDER BY p.due_at, e.id LIMIT 100
-    `, user.id, user.role, user.department, user.role, user.id, user.id);
+        ${cursor ? 'AND (p.due_at, e.id) > (?,?)' : ''}
+      ORDER BY p.due_at, e.id LIMIT ?
+    `, user.id, user.role, user.department, user.role, user.id, user.id,
+    ...(cursor ? [cursor.dueAt, cursor.examId] : []), pageSize + 1);
+    const tasks = rows.slice(0, pageSize);
+    const last = tasks.at(-1);
+    return { tasks, nextCursor: rows.length > pageSize ? { dueAt: last.dueAt, examId: last.examId } : null };
   }
 
-  return { scopeExam, state, options, configure, save, reopen, publish, retract, tasksFor };
+  return { scopeExam, state, options, configure, save, reopen, publish, retract, tasksFor, jobPolicy, configureJob, assignFromJob, startReviewDeadline };
 }

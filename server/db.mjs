@@ -88,6 +88,36 @@ export function openDatabase(dataDir) {
     );
     INSERT OR IGNORE INTO migrations VALUES(5, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
   `));
+  transaction(db, () => {
+    if (db.prepare('SELECT 1 FROM migrations WHERE version=6').get()) return;
+    db.exec(`
+      CREATE TABLE job_review_policies(
+        job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+        enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+        settings TEXT NOT NULL,
+        version INTEGER NOT NULL
+      );
+      ALTER TABLE review_plans ADD COLUMN due_hours INTEGER;
+      ALTER TABLE exams ADD COLUMN job_title TEXT;
+      CREATE TABLE exam_operational_events(
+        id INTEGER PRIMARY KEY,
+        exam_id TEXT NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+        actor_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        details TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX exam_operational_events_exam ON exam_operational_events(exam_id, action, id);
+      CREATE TABLE feedback_access_events(
+        exam_id TEXT NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+        feedback_hash TEXT NOT NULL,
+        first_access_at TEXT NOT NULL,
+        PRIMARY KEY(exam_id, feedback_hash)
+      );
+      CREATE INDEX review_plans_due_order ON review_plans(due_at, exam_id);
+      INSERT INTO migrations VALUES(6, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+    `);
+  });
   return db;
 }
 export function transaction(db, fn) { db.exec('BEGIN IMMEDIATE'); try { const result = fn(); db.exec('COMMIT'); return result; } catch (error) { db.exec('ROLLBACK'); throw error; } }

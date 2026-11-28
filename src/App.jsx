@@ -3,7 +3,7 @@ import { BriefcaseBusiness, Users, LayoutDashboard, ClipboardList, BookOpen, Set
 import { api, date, roles, examStates, stages } from './api';
 import { Button, ErrorBox, Empty, Loading, Badge, Panel, Heading, Modal, Field, Form, Confirm } from './ui';
 import CandidatePortal, { CandidateResult } from './CandidatePortal';
-import { DecisionForm, FeedbackLinkActions, ReviewPlanForm, ReviewTasks, WorkflowStatus } from './ReviewWorkflow';
+import { DecisionForm, FeedbackLinkActions, JobReviewPolicyForm, ReviewPlanForm, ReviewTasks, WorkflowStatus } from './ReviewWorkflow';
 
 const Workspace = createContext(null);
 const useWorkspace = () => useContext(Workspace);
@@ -25,7 +25,7 @@ export default function App() {
 function StaffApp() {
   const [auth,setAuth]=useState(null),[loading,setLoading]=useState(true),[error,setError]=useState('');
   const [data,setData]=useState(null),[view,setView]=useState('dashboard'),[modal,setModal]=useState(null),[notice,setNotice]=useState('');
-  const load=useCallback(async()=>{ const result=await api('/api/workspace');setData(result); },[]);
+  const load=useCallback(async()=>{ const result=await api('/api/workspace?view=summary');setData(result); },[]);
   const initialize=useCallback(async()=>{setLoading(true);setError('');try { const result=await api('/api/auth/me');setAuth(result);if (!result.user.mustChange) await load(); } catch(e) {if(e.status!==401)setError(e);setAuth(null);}finally{setLoading(false);}},[load]);
   useEffect(()=>{ initialize();const expire=()=>{setAuth(null);setData(null);setModal(null);setNotice('登录已过期，请重新登录。');};window.addEventListener('staff-session-expired',expire);return()=>window.removeEventListener('staff-session-expired',expire);},[initialize]);
   useEffect(()=>{if(!notice)return;const t=setTimeout(()=>setNotice(''),7000);return()=>clearTimeout(t);},[notice]);
@@ -51,7 +51,14 @@ function Dashboard(){
 function Jobs(){
   const {data,hr,open,close,mutate}=useWorkspace();
   function edit(job){open(job?'编辑岗位':'创建岗位',<Form initial={job?{...job,requirementsText:job.requirements.join('\n')}:{title:'',department:'',location:'',description:'',requirementsText:'',status:'招聘中'}} fields={jobFields} onSubmit={async value=>{await mutate('/api/jobs'+(job?'/'+job.id:''),job?'PUT':'POST',{...value,requirements:value.requirementsText.split('\n').map(s=>s.trim()).filter(Boolean)});close();}}/>);}
-  return <><Heading title="招聘岗位" description="明确岗位要求，所有候选人和测评均归属具体岗位。">{hr&&<Button onClick={()=>edit()}><Plus size={17}/>创建岗位</Button>}</Heading>{!data.jobs.length?<Empty>暂无岗位。</Empty>:<div className="card-grid">{data.jobs.map(job=><Panel key={job.id} title={job.title} actions={<Badge>{job.status}</Badge>}><div className="stack pad"><p className="muted">{job.department} · {job.location}</p><p className="pre-wrap">{job.description}</p><div className="tags">{job.requirements.map(r=><Badge key={r}>{r}</Badge>)}</div><p>{data.candidates.filter(c=>c.jobId===job.id).length} 位候选人</p>{hr&&<Button secondary onClick={()=>edit(job)}>编辑岗位</Button>}</div></Panel>)}</div>}</>;
+  return <><Heading title="招聘岗位" description="明确岗位要求，所有候选人和测评均归属具体岗位。">{hr&&<Button onClick={()=>edit()}><Plus size={17}/>创建岗位</Button>}</Heading>{!data.jobs.length?<Empty>暂无岗位。</Empty>:<div className="card-grid">{data.jobs.map(job=><Panel key={job.id} title={job.title} actions={<Badge>{job.status}</Badge>}><div className="stack pad"><p className="muted">{job.department} · {job.location}</p><p className="pre-wrap">{job.description}</p><div className="tags">{job.requirements.map(r=><Badge key={r}>{r}</Badge>)}</div><p>{data.candidates.filter(c=>c.jobId===job.id).length} 位候选人</p>{hr && <div className="inline-actions">
+    <Button secondary onClick={() => edit(job)}>编辑岗位</Button>
+    <Button secondary onClick={() => open('岗位评审默认安排', <JobReviewPolicyForm jobId={job.id} ownerId={data.user.id}
+      save={async values => {
+        await mutate('/api/jobs/' + job.id + '/review-policy', 'PUT', values, '岗位评审默认安排已保存');
+        close();
+      }}/>) }>岗位评审默认安排</Button>
+  </div>}</div></Panel>)}</div>}</>;
 }
 function CandidateTable({candidates}){
   const {data,open}=useWorkspace();
@@ -140,6 +147,16 @@ function ExamDetail({ examId }) {
     }}/>);
   }
 
+  function adjustDuration() {
+    open('调整作答时长', <Form initial={{ duration: exam.duration, reason: '' }} fields={[
+      { key: 'duration', label: '新时长（分钟）', type: 'number', required: true, min: 1, max: 480 },
+      textField('reason', '调整原因', 500)
+    ]} onSubmit={async values => {
+      await mutate(route + '/duration', 'PUT', { ...values, previous: exam.duration }, '作答时长已更新');
+      backToExam();
+    }}/>);
+  }
+
   function reopen(task) {
     open('重新打开复核', <Form initial={{ reason: '' }}
       fields={[textField('reason', '重新打开原因', 500)]}
@@ -182,6 +199,23 @@ function ExamDetail({ examId }) {
     <p className="muted">开始 {date(exam.startedAt)}<br/>截止 {date(exam.deadlineAt)}<br/>提交 {date(exam.submittedAt)}<br/>
       {exam.recordSwitch ? '页面隐藏 ' + exam.switchCount + ' 次，仅供人工参考' : '未开启切屏记录'}
     </p>
+    {hr && exam.status === 'invited' && <div className="inline-actions">
+      <Button secondary onClick={adjustDuration}>调整作答时长</Button>
+      {!exam.operationalEvents.some(event => event.action === 'exam.invite.manual') && <Button secondary onClick={() =>
+        open('登记手动通知', <Confirm message="确认已通过可信渠道把邀请发给候选人？" action={async () => {
+          await mutate(route + '/manual-notice', 'POST', undefined, '已登记手动通知');
+          backToExam();
+        }}/>)
+      }>登记手动通知</Button>}
+    </div>}
+    {hr && exam.operationalEvents.length > 0 && <details>
+      <summary>通知与调整记录</summary>
+      <ul>{exam.operationalEvents.map((event, index) => <li key={index}>
+        {date(event.at)} · {event.action === 'exam.invite.manual' ? 'HR 已登记手动通知' :
+          event.action === 'exam.invite.opened' ? '候选人入口首次打开' :
+          '作答时长从 ' + event.details.previous + ' 分钟调整为 ' + event.details.duration + ' 分钟 · ' + event.details.reason}
+      </li>)}</ul>
+    </details>}
     {canEditPlan && <Button secondary onClick={editPlan}>安排独立评审</Button>}
     <WorkflowStatus exam={exam} hr={hr} edit={editPlan} reopen={reopen}/>
     {submitted && <>
@@ -220,6 +254,7 @@ function ExamDetail({ examId }) {
       </Panel>
       {exam.feedback && <Panel title="已发布给候选人的反馈"><div className="stack pad">
         <p>{exam.feedback.message}</p><p>人工评分 {exam.feedback.score} / 100 · {exam.feedback.basis}</p>
+        {hr && <p className="muted">{exam.feedbackFirstAccessAt ? '首次结果访问 ' + date(exam.feedbackFirstAccessAt) : '暂无候选人结果访问记录'}</p>}
         {hr && <FeedbackLinkActions issue={() => api(route + '/feedback-link', { method: 'POST' })}
           revoke={() => api(route + '/feedback-link', { method: 'DELETE' })}/>}
         {hr && <Button secondary onClick={async () => {

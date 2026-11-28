@@ -6,7 +6,7 @@ import path from 'node:path';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { createBackup, restoreBackup } from '../scripts/backup.mjs';
-import { hashPassword, id, now } from '../server/security.mjs';
+import { digest, hashPassword, id, now } from '../server/security.mjs';
 
 test('指定评审、独立草稿、改派、双评发布、撤回与历史记录', async t => {
   const f = await fixture();
@@ -111,6 +111,8 @@ test('指定评审、独立草稿、改派、双评发布、撤回与历史记�
   const secondLink = await issue();
   assert.equal((await result(firstLink)).status, 410);
   assert.equal((await result(secondLink)).status, 200);
+  assert.ok((await details()).feedbackFirstAccessAt);
+  assert.equal(f.db.prepare('SELECT count(*) AS count FROM feedback_access_events WHERE exam_id=?').get(invitation.id).count, 1);
 
   const backupRoot = await mkdtemp(path.join(os.tmpdir(), 'talent-feedback-'));
   t.after(() => rm(backupRoot, { recursive: true, force: true }));
@@ -139,4 +141,101 @@ test('指定评审、独立草稿、改派、双评发布、撤回与历史记�
 
   const actions = f.db.prepare('SELECT action FROM review_workflow_events WHERE exam_id=? ORDER BY id').all(invitation.id).map(row => row.action);
   assert.deepEqual(actions, ['review.assign', 'review.draft', 'review.submit', 'review.reassign', 'review.submit', 'feedback.publish', 'feedback.retract', 'review.reopen']);
+});
+
+test('岗位默认安排仅影响新邀请，通知与时长调整在服务端校验并留痕', async t => {
+  const f = await fixture();
+  t.after(() => f.cleanup());
+  const hr = f.client(), dept = f.client(), outsider = f.client(), candidate = f.client();
+  await hr.login();
+  await dept.login('department');
+  await outsider.login('other');
+  const b = await setupBusiness(hr);
+  const legacy = await invite(hr, b);
+  const policyPath = '/api/jobs/' + b.jobId + '/review-policy';
+  const policy = {
+    version: 0, enabled: true, ownerId: f.accounts.hr.id, reviewerIds: [f.accounts.department.id], dueHours: 48
+  };
+  assert.equal((await dept.call(policyPath)).status, 403);
+  assert.equal((await dept.call(policyPath, 'PUT', policy)).status, 403);
+  assert.equal((await hr.call(policyPath, 'PUT', { ...policy, reviewerIds: [f.accounts.other.id] })).status, 400);
+  assert.equal((await hr.call(policyPath, 'PUT', policy)).status, 200);
+  assert.equal((await hr.call(policyPath, 'PUT', policy)).status, 409);
+  assert.equal((await dept.call('/api/exams/' + legacy.id)).body.workflow, null);
+  const applicant = await hr.call('/api/candidates', 'POST', {
+    jobId: b.jobId, name: '评审试点候选人', email: '', phone: '', resumeText: '体验 SQL 业务流程', consent: true
+  });
+  assert.equal(applicant.status, 201);
+  const next = await invite(hr, { ...b, candidateId: applicant.body.id });
+  const route = '/api/exams/' + next.id;
+  assert.equal((await outsider.call(route)).status, 404);
+  assert.equal((await hr.call(route)).body.workflow.dueHours, 48);
+  assert.equal((await hr.call(policyPath, 'PUT', { version: 1, enabled: false })).status, 200);
+  assert.equal((await dept.call(route)).body.workflow.required, 1);
+
+  const adjust = { duration: 90, previous: 60, reason: '开考前确认计时安排' };
+  assert.equal((await dept.call(route + '/duration', 'PUT', adjust)).status, 403);
+  assert.equal((await hr.call(route + '/manual-notice', 'POST')).status, 200);
+  assert.equal((await hr.call(route + '/manual-notice', 'POST')).status, 200);
+  const redeem = await candidate.call('/api/portal/redeem', 'POST', { token: next.token });
+  assert.equal(redeem.body.jobTitle, '后端工程师');
+  assert.equal(redeem.body.duration, 60);
+  assert.equal((await hr.call(route + '/duration', 'PUT', adjust)).status, 200);
+  assert.equal((await hr.call(route + '/duration', 'PUT', adjust)).status, 409);
+  const start = (duration) => candidate.call('/api/portal/start', 'POST', { consent: true, duration });
+  assert.equal((await start(60)).status, 409);
+  assert.equal((await start(90)).status, 200);
+  assert.equal((await hr.call(route + '/duration', 'PUT', { ...adjust, previous: 90 })).status, 409);
+  assert.equal((await candidate.call('/api/portal/submit', 'POST', { revision: 0, answers: {}, usedAI: false })).status, 200);
+  const detail = (await dept.call(route)).body;
+  assert.equal(detail.operationalEvents, undefined);
+  const summary = (await dept.call('/api/workspace?view=summary')).body;
+  const row = summary.candidates.find(person => person.id === applicant.body.id);
+  assert.deepEqual(Object.keys(row.analysis).sort(), ['method', 'score', 'stale']);
+  assert.equal(row.email, undefined);
+  const outsideSummary = (await outsider.call('/api/workspace?view=summary')).body;
+  assert.equal(outsideSummary.candidates.some(person => person.id === applicant.body.id), false);
+  assert.equal(outsideSummary.exams.some(exam => exam.id === next.id), false);
+  assert.equal(detail.workflow.dueHours, null);
+  assert.equal(Date.parse(detail.workflow.dueAt) - Date.parse(detail.submittedAt), 48 * 3600000);
+  const { operationalEvents } = (await hr.call(route)).body;
+  assert.deepEqual(operationalEvents.map(event => event.action), ['exam.duration.adjust', 'exam.invite.opened', 'exam.invite.manual']);
+  assert.equal(operationalEvents[0].details.reason, adjust.reason);
+
+  const afterDisable = await invite(hr, { ...b, candidateId: applicant.body.id });
+  assert.equal((await dept.call('/api/exams/' + afterDisable.id)).body.workflow, null);
+});
+
+
+test('待办分页以期限与测评编号稳定排序并保留角色过滤', async t => {
+  const f = await fixture();
+  t.after(() => f.cleanup());
+  const hr = f.client(), reviewer = f.client(), outsider = f.client();
+  await hr.login();
+  await reviewer.login('department');
+  await outsider.login('other');
+  const b = await setupBusiness(hr);
+  const dueAt = new Date(Date.now() + 86400000).toISOString();
+  const time = now();
+  const examIds = Array.from({ length: 101 }, () => id()).sort();
+  const addExam = f.db.prepare(`
+    INSERT INTO exams(id,candidate_id,assessment_id,name,questions,duration,allow_ai,record_switch,token_hash,status,expires_at,submitted_at,created_at)
+    VALUES(?,?,?,'Synthetic review','[]',60,0,0,?,'submitted',?,?,?)
+  `);
+  const addPlan = f.db.prepare('INSERT INTO review_plans(exam_id,owner_id,due_at) VALUES(?,?,?)');
+  const addTask = f.db.prepare('INSERT INTO review_tasks(id,exam_id,user_id,updated_at) VALUES(?,?,?,?)');
+  for (const examId of examIds) {
+    addExam.run(examId, b.candidateId, b.assessmentId, digest(examId), dueAt, time, time);
+    addPlan.run(examId, f.accounts.hr.id, dueAt);
+    addTask.run(id(), examId, f.accounts.department.id, time);
+  }
+  const route = '/api/review-tasks';
+  const first = (await reviewer.call(route)).body;
+  assert.deepEqual(first.tasks.map(task => task.examId), examIds.slice(0, 100));
+  const nextRoute = route + '?' + new URLSearchParams(first.nextCursor);
+  const next = (await reviewer.call(nextRoute)).body;
+  assert.deepEqual(next.tasks.map(task => task.examId), examIds.slice(100));
+  assert.equal(next.nextCursor, null);
+  assert.deepEqual((await outsider.call(nextRoute)).body.tasks, []);
+  assert.equal((await reviewer.call(route + '?dueAt=' + encodeURIComponent(dueAt))).status, 400);
 });

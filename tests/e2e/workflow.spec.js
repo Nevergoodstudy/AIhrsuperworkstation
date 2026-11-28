@@ -170,34 +170,61 @@ test('我的待办与独立评审走通发布、只读结果和撤回', async ({
     await login(hr, 'hr');
     const business = await setupBusiness(apiClient(hr.request));
     const hrApi = apiClient(hr.request);
+    const workspace = await hrApi.call('/api/workspace');
+    const job = workspace.body.jobs.find(job => job.id === business.jobId);
+    const renamed = await hrApi.call('/api/jobs/' + job.id, 'PUT', { ...job, title: '岗位默认评审试点' });
+    expect(renamed.status).toBe(200);
     const response = await hrApi.call('/api/candidates/' + business.candidateId);
     expect(response.status).toBe(200);
     const changed = await hrApi.call('/api/candidates/' + business.candidateId, 'PUT', {
       ...response.body, name: '独立评审流程候选人'
     });
     expect(changed.status).toBe(200);
-    const link = await invite(hrApi, business);
+    await hr.getByRole('button', { name: '刷新工作区' }).click();
+    await hr.getByRole('button', { name: '招聘岗位', exact: true }).click();
+    await hr.locator('.card-grid > .panel').filter({ has: hr.getByRole('heading', { name: '岗位默认评审试点', exact: true }) })
+      .getByRole('button', { name: '岗位评审默认安排' }).click();
+    const policy = hr.getByRole('dialog', { name: '岗位评审默认安排' });
+    await policy.getByLabel('为新邀请启用独立评审').check();
+    await policy.getByLabel(/department测试账号/).check();
+    await policy.getByLabel(/admin测试账号/).check();
+    await policy.getByRole('button', { name: '保存', exact: true }).click();
+    await expect(policy).not.toBeVisible();
 
+    const link = await invite(hrApi, business);
     const openExams = page => page.getByRole('button', { name: '测评与复核', exact: true }).click();
     const examRow = page => page.getByRole('row').filter({ hasText: '独立评审流程候选人' });
     await hr.getByRole('button', { name: '刷新工作区' }).click();
     await openExams(hr);
     await examRow(hr).getByRole('button', { name: '查看测评' }).click();
-    await hr.getByRole('button', { name: '安排独立评审' }).click();
-    const plan = hr.getByRole('dialog', { name: '安排独立评审' });
-    await plan.getByLabel('安排或变更原因').fill('验证盲评与跟进');
-    await plan.getByLabel(/department测试账号/).check();
-    await plan.getByLabel(/admin测试账号/).check();
-    await plan.getByRole('button', { name: '保存评审安排' }).click();
     await expect(hr.getByText(/已提交 0 \/ 2 份/)).toBeVisible();
+    await hr.getByRole('button', { name: '登记手动通知' }).click();
+    await hr.getByRole('dialog').getByRole('button', { name: '确认', exact: true }).click();
+    await hr.getByText('通知与调整记录').click();
+    await expect(hr.getByText(/HR 已登记手动通知/)).toBeVisible();
+    await hr.getByRole('button', { name: '调整作答时长' }).click();
+    const durationDialog = hr.getByRole('dialog', { name: '调整作答时长' });
+    await durationDialog.getByLabel('新时长（分钟）').fill('90');
+    await durationDialog.getByLabel('调整原因').fill('开考前确认时长');
+    await durationDialog.getByRole('button', { name: '保存', exact: true }).click();
+    await expect(durationDialog).not.toBeVisible();
 
     await candidate.goto(link.inviteUrl);
-    await candidate.getByLabel('我已阅读测评规则', { exact: false }).check();
-    await candidate.getByRole('button', { name: '同意并开始测评' }).click();
-    await candidate.getByLabel('第 1 题答案').fill('仅答卷可见的内容');
-    await candidate.getByRole('button', { name: '提交测评', exact: true }).click();
-    await candidate.getByRole('button', { name: '确认提交' }).click();
-    await expect(candidate.getByRole('heading', { name: '测评已提交' })).toBeVisible();
+    await expect(candidate.getByRole('heading', { name: '独立评审流程候选人，您好' })).toBeFocused();
+    await expect(candidate.getByText('90', { exact: true })).toBeVisible();
+    await candidate.getByText('作答需要帮助', { exact: true }).press('Enter');
+    await expect(candidate.getByText(/如需额外作答时间/)).toBeVisible();
+    await candidate.getByLabel('我已阅读测评规则', { exact: false }).press('Space');
+    await candidate.getByRole('button', { name: '同意并开始测评' }).press('Enter');
+    await expect(candidate.getByRole('heading', { name: '后端业务测评' })).toBeFocused();
+    const answer = candidate.getByLabel('第 1 题答案');
+    await answer.pressSequentially('synthetic keyboard answer');
+    await expect(candidate.getByRole('status').filter({ hasText: /已保存/ })).toBeVisible();
+    await candidate.reload();
+    await expect(answer).toHaveValue('synthetic keyboard answer');
+    await candidate.getByRole('button', { name: '提交测评', exact: true }).press('Enter');
+    await candidate.getByRole('button', { name: '确认提交' }).press('Enter');
+    await expect(candidate.getByRole('heading', { name: '测评已提交' })).toBeFocused();
 
     await login(reviewer, 'department');
     await login(second, 'admin');
@@ -233,8 +260,9 @@ test('我的待办与独立评审走通发布、只读结果和撤回', async ({
     await decision.getByRole('button', { name: '生成或补发只读结果链接' }).click();
     const resultLink = await decision.getByLabel('候选人只读结果链接').inputValue();
     await candidate.goto(resultLink);
+    await expect(candidate.getByRole('heading', { name: '测评反馈' })).toBeFocused();
     await expect(candidate.getByText('感谢完成测评')).toBeVisible();
-    await expect(candidate.getByText('仅答卷可见的内容')).toHaveCount(0);
+    await expect(candidate.getByText('synthetic keyboard answer')).toHaveCount(0);
     await expect(candidate.getByText('内部决定说明')).toHaveCount(0);
     await expect(candidate).toHaveURL(/#\/result$/);
     await decision.getByRole('button', { name: '撤回反馈', exact: true }).click();

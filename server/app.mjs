@@ -55,6 +55,7 @@ export function createApp(overrides = {}) {
     const submittedAt = timedOut ? time : exam.submitted_at;
     return transaction(db, () => {
       run('UPDATE exams SET status=?,submitted_at=?,revision=revision+1 WHERE id=?', status, submittedAt, exam.id);
+      if (timedOut) reviewWorkflow.startReviewDeadline(exam.id, submittedAt);
       applyExamStage(db, exam, expired ? 'exam.expire' : 'exam.timeout', 'system');
       return { ...exam, status, submitted_at: submittedAt, revision: exam.revision + 1 };
     });
@@ -95,6 +96,11 @@ export function createApp(overrides = {}) {
     if (!candidate) throw fail(404, '候选人不存在或无访问权限');
     jobFor(user, candidate.job_id); return candidate;
   }
+  function recordExamOperation(examId, actorId, action, details = {}) {
+    run('INSERT INTO exam_operational_events(exam_id,actor_id,action,details,created_at) VALUES(?,?,?,?,?)',
+      examId, actorId, action, JSON.stringify(details), now());
+    audit(db, actorId, action, examId);
+  }
   function examFor(user, examId) {
     const exam = one('SELECT * FROM exams WHERE id=?', examId);
     if (!exam) throw fail(404, '测评不存在或无访问权限');
@@ -102,8 +108,19 @@ export function createApp(overrides = {}) {
     reviewWorkflow.scopeExam(exam, user);
     return settleExam(exam);
   }
-  function cleanCandidate(candidate, user, detailed = false) {
+  function cleanCandidate(candidate, user, detailed = false, summary = false) {
     const analysis = analysisView(candidate);
+    if (summary) {
+      const skills = analysis.stale ? [] : json(candidate.skills, []);
+      const { stale, score, method } = analysis;
+      const candidateSummary = {
+        id: candidate.id, jobId: candidate.job_id, name: candidate.name, stage: candidate.stage,
+        analysis: { stale, score, method }
+      };
+      return user.role === 'department'
+        ? { ...candidateSummary, skills: skills.map(redact) }
+        : { ...candidateSummary, skills, email: candidate.email };
+    }
     const result = { id: candidate.id, jobId: candidate.job_id, name: candidate.name, stage: candidate.stage, skills: analysis.stale ? [] : json(candidate.skills, []), analysis, version: candidate.version, createdAt: candidate.created_at, updatedAt: candidate.updated_at, consentAt: candidate.consent_at };
     if (user.role === 'department') { result.skills = result.skills.map(redact); result.analysis = { ...result.analysis, summary: redact(result.analysis.summary ?? ''), evidence: (result.analysis.evidence ?? []).map(e => ({ ...e, requirement: redact(e.requirement), quote: redact(e.quote) })) }; }
     else Object.assign(result, { email: candidate.email, phone: candidate.phone, fileName: candidate.file_name, hasFile: Boolean(candidate.file_key), ...(detailed ? { resumeText: candidate.resume_text } : {}) });
@@ -113,8 +130,9 @@ export function createApp(overrides = {}) {
     return { jobId: job.id, jobVersion: job.version, resumeHash: digest(candidate.resume_text), candidateVersion: candidate.version, model: method === 'ai' ? config.aiModel : 'keyword-v1', promptVersion: method === 'ai' ? AI_PROMPT_VERSION : 'keyword-v1', requestedBy: userId };
   }
   function analysisView(candidate) {
-    const analysis = json(candidate.analysis, {}), source = analysis.source, job = one('SELECT version FROM jobs WHERE id=?', candidate.job_id);
-    const staleReason = !source ? '历史分析未记录输入版本，请重新分析' : source.jobId !== candidate.job_id || source.jobVersion !== job?.version ? '岗位已更新，请重新分析' : source.resumeHash !== digest(candidate.resume_text) ? '简历已更新，请重新分析' : '';
+    const analysis = json(candidate.analysis, {}), source = analysis.source;
+    const jobVersion = candidate.current_job_version ?? one('SELECT version FROM jobs WHERE id=?', candidate.job_id)?.version;
+    const staleReason = !source ? '历史分析未记录输入版本，请重新分析' : source.jobId !== candidate.job_id || source.jobVersion !== jobVersion ? '岗位已更新，请重新分析' : source.resumeHash !== digest(candidate.resume_text) ? '简历已更新，请重新分析' : '';
     return { ...analysis, stale: Boolean(staleReason), staleReason, ...(analysis.method === 'ai' ? { summaryNeedsReview: true } : {}) };
   }
   function cleanExam(exam) { return { id: exam.id, candidateId: exam.candidate_id, assessmentId: exam.assessment_id, name: exam.name, duration: exam.duration, status: exam.status, expiresAt: exam.expires_at, startedAt: exam.started_at, deadlineAt: exam.deadline_at, submittedAt: exam.submitted_at, feedback: json(exam.feedback), mailStatus: exam.mail_status, createdAt: exam.created_at }; }
@@ -148,15 +166,21 @@ export function createApp(overrides = {}) {
     const scoped = req.user.role === 'department';
     const jobs = all('SELECT * FROM jobs' + (scoped ? ' WHERE department=?' : '') + ' ORDER BY created_at DESC', ...(scoped ? [req.user.department] : [])).map(j => ({ ...j, requirements: json(j.requirements, []) }));
     const visible = new Set(jobs.map(j => j.id));
-    const candidates = all('SELECT * FROM candidates ORDER BY created_at DESC').filter(c => visible.has(c.job_id));
-    const exams = scoped ? all(`
-      SELECT e.* FROM exams e JOIN candidates c ON c.id=e.candidate_id JOIN jobs j ON j.id=c.job_id
-      WHERE j.department=? AND (
+    const summary = req.query.view === 'summary';
+    const candidates = all(`
+      SELECT c.*, j.version AS current_job_version FROM candidates c JOIN jobs j ON j.id=c.job_id
+      ${scoped ? 'WHERE j.department=?' : ''} ORDER BY c.created_at DESC, c.id DESC
+    `, ...(scoped ? [req.user.department] : []));
+    const exams = all(`
+      SELECT e.id, e.candidate_id, e.assessment_id, e.name, e.duration, e.status, e.expires_at, e.started_at,
+        e.deadline_at, e.submitted_at, e.mail_status, e.created_at, ${summary ? 'e.feedback IS NOT NULL AS feedback' : 'e.feedback'}
+      FROM exams e JOIN candidates c ON c.id=e.candidate_id JOIN jobs j ON j.id=c.job_id
+      ${scoped ? `WHERE j.department=? AND (
         NOT EXISTS (SELECT 1 FROM review_plans p WHERE p.exam_id=e.id)
         OR EXISTS (SELECT 1 FROM review_tasks t WHERE t.exam_id=e.id AND t.user_id=? AND t.active=1)
-      ) ORDER BY e.created_at DESC
-    `, req.user.department, req.user.id) : all('SELECT * FROM exams ORDER BY created_at DESC');
-    res.json({ company: config.company, user: publicUser(req.user), jobs, candidates: candidates.map(c => cleanCandidate(c, req.user)), questions: all('SELECT * FROM questions ORDER BY created_at DESC').map(q => ({ ...q, active: Boolean(q.active) })), assessments: all('SELECT * FROM assessments ORDER BY created_at DESC').filter(a => visible.has(a.job_id)).map(cleanAssessment), exams: exams.map(cleanExam), readiness: { ai: Boolean(config.aiKey && config.aiModel), email: Boolean(config.smtpUrl && config.mailFrom), secure: config.secureCookies } });
+      )` : ''} ORDER BY e.created_at DESC, e.id DESC
+    `, ...(scoped ? [req.user.department, req.user.id] : []));
+    res.json({ company: config.company, user: publicUser(req.user), jobs, candidates: candidates.map(c => cleanCandidate(c, req.user, false, summary)), questions: all('SELECT * FROM questions ORDER BY created_at DESC').map(q => ({ ...q, active: Boolean(q.active) })), assessments: all('SELECT * FROM assessments ORDER BY created_at DESC').filter(a => visible.has(a.job_id)).map(cleanAssessment), exams: exams.map(cleanExam), readiness: { ai: Boolean(config.aiKey && config.aiModel), email: Boolean(config.smtpUrl && config.mailFrom), secure: config.secureCookies } });
   });
   app.post('/api/jobs', staff, hr, (req, res) => {
     const b = jobSchema.parse(req.body), key = id(), time = now();
@@ -199,6 +223,14 @@ export function createApp(overrides = {}) {
     }
     res.status(201).json({ id: key });
   }
+  app.get('/api/jobs/:id/review-policy', staff, hr, (req, res) => {
+    const job = jobFor(req.user, req.params.id);
+    res.json({ policy: reviewWorkflow.jobPolicy(job.id), people: reviewWorkflow.options(job.department) });
+  });
+  app.put('/api/jobs/:id/review-policy', staff, hr, (req, res) => {
+    reviewWorkflow.configureJob(jobFor(req.user, req.params.id), req.user, req.body);
+    res.json({ ok: true });
+  });
   app.post('/api/candidates', staff, hr, (req, res) => addCandidate(req, res));
   app.post('/api/candidates/import', staff, hr, upload.single('resume'), async (req, res) => {
     if (!req.file) throw fail(400, '请选择简历文件');
@@ -308,13 +340,15 @@ export function createApp(overrides = {}) {
       throw fail(409, '该候选人已有有效测评，请先撤销旧邀请');
     }
     const candidate = activeExam ? candidateFor(req.user, b.candidateId) : requestedCandidate;
+    const job = jobFor(req.user, candidate.job_id);
     const questions = json(assessment.question_ids, []).map(key => one('SELECT * FROM questions WHERE id=? AND active=1', key));
     if (!questions.length || questions.some(q => !q)) throw fail(400, '方案中有已停用的题目，请先编辑方案');
     if (assessment.randomize) shuffle(questions);
     const key = id(), raw = token(), time = now(), expires = new Date(Date.now() + b.validDays * dayMs).toISOString();
     transaction(db, () => {
       run('INSERT INTO exams(id,candidate_id,assessment_id,name,questions,duration,allow_ai,record_switch,token_hash,status,expires_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', key, candidate.id, assessment.id, assessment.name, JSON.stringify(questions.map(q => ({ id: q.id, title: q.title, competency: q.competency, type: q.type, minutes: q.minutes, rubric: q.rubric }))), assessment.duration, assessment.allow_ai, assessment.record_switch, digest(raw), 'invited', expires, time);
-      run('UPDATE exams SET prior_stage=? WHERE id=?', candidate.stage, key);
+      run('UPDATE exams SET prior_stage=?,job_title=? WHERE id=?', candidate.stage, job.title, key);
+      reviewWorkflow.assignFromJob(key, job, req.user, expires);
       applyExamStage(db, one('SELECT * FROM exams WHERE id=?', key), 'exam.invite', req.user.id); audit(db, req.user.id, 'exam.invite', key);
     });
     let mailStatus = 'not_sent', mailError = '';
@@ -327,12 +361,36 @@ export function createApp(overrides = {}) {
     limit(db, 'mail:' + req.user.id, 30, 3600000);
     const mailStatus = await deliverInvitation(exam, candidateFor(req.user, exam.candidate_id), inviteToken); audit(db, req.user.id, 'exam.email', exam.id); res.json({ mailStatus });
   });
+  app.put('/api/exams/:id/duration', staff, hr, (req, res) => {
+    const { duration, previous, reason } = z.object({
+      duration: z.number().int().min(1).max(480), previous: z.number().int().min(1).max(480), reason: required(500)
+    }).parse(req.body);
+    const exam = examFor(req.user, req.params.id);
+    if (exam.status !== 'invited') throw fail(409, '只能在正式开始前调整作答时长');
+    if (exam.duration !== previous) throw fail(409, '作答时长已更新，请刷新');
+    if (exam.duration === duration) return res.json({ ok: true });
+    transaction(db, () => {
+      run('UPDATE exams SET duration=? WHERE id=?', duration, exam.id);
+      recordExamOperation(exam.id, req.user.id, 'exam.duration.adjust', { previous, duration, reason });
+    });
+    res.json({ ok: true });
+  });
+  app.post('/api/exams/:id/manual-notice', staff, hr, (req, res) => {
+    const exam = examFor(req.user, req.params.id);
+    if (exam.status !== 'invited') throw fail(409, '只能为待开始的测评登记邀请通知');
+    transaction(db, () => {
+      if (!one("SELECT 1 FROM exam_operational_events WHERE exam_id=? AND action='exam.invite.manual'", exam.id)) {
+        recordExamOperation(exam.id, req.user.id, 'exam.invite.manual');
+      }
+    });
+    res.json({ ok: true });
+  });
   app.post('/api/exams/:id/revoke', staff, hr, (req, res) => {
     const exam = examFor(req.user, req.params.id);
     if (!['invited', 'in_progress'].includes(exam.status)) throw fail(409, '只有待开始和进行中的测评可以撤销');
     transaction(db, () => { run(`UPDATE exams SET status='revoked',revision=revision+1 WHERE id=?`, exam.id); run('DELETE FROM portal_sessions WHERE exam_id=?', exam.id); applyExamStage(db, exam, 'exam.revoke', req.user.id); audit(db, req.user.id, 'exam.revoke', exam.id); }); res.json({ ok: true });
   });
-  app.get('/api/review-tasks', staff, (req, res) => res.json({ tasks: reviewWorkflow.tasksFor(req.user) }));
+  app.get('/api/review-tasks', staff, (req, res) => res.json(reviewWorkflow.tasksFor(req.user, req.query)));
   app.get('/api/exams/:id', staff, (req, res) => {
     const exam = examFor(req.user, req.params.id);
     const candidate = candidateFor(req.user, exam.candidate_id);
@@ -342,7 +400,15 @@ export function createApp(overrides = {}) {
     const detail = {
       ...cleanExam(exam), questions, answers, usedAI: Boolean(exam.used_ai), allowAI: Boolean(exam.allow_ai),
       recordSwitch: Boolean(exam.record_switch), switchCount: one('SELECT count(*) AS count FROM exam_events WHERE exam_id=?', exam.id).count,
-      consentAt: exam.consent_at, ...reviewWorkflow.state(exam, req.user, job.department)
+      consentAt: exam.consent_at,
+      ...(['hr', 'admin'].includes(req.user.role) ? {
+        feedbackFirstAccessAt: exam.feedback
+          ? one('SELECT first_access_at FROM feedback_access_events WHERE exam_id=? AND feedback_hash=?', exam.id, digest(exam.feedback))?.first_access_at ?? null
+          : null,
+        operationalEvents: all("SELECT action,details,created_at FROM exam_operational_events WHERE exam_id=? ORDER BY id DESC LIMIT 20", exam.id)
+          .map(event => ({ action: event.action, details: json(event.details), at: event.created_at }))
+      } : {}),
+      ...reviewWorkflow.state(exam, req.user, job.department)
     };
     if (req.user.role === 'department') {
       detail.answers = Object.fromEntries(Object.entries(answers).map(([key, value]) => [key, redact(value)]));
@@ -428,10 +494,15 @@ export function createApp(overrides = {}) {
       run('DELETE FROM sessions WHERE user_id=?', user.id); audit(db, req.user.id, hash ? 'user.reset' : 'user.active', user.id);
     }); res.json({ ok: true });
   });
+  function recordFeedbackAccess(examId, feedbackHash) {
+    if (one('SELECT 1 FROM feedback_access_events WHERE exam_id=? AND feedback_hash=?', examId, feedbackHash)) return;
+    run('INSERT OR IGNORE INTO feedback_access_events VALUES(?,?,?)', examId, feedbackHash, now());
+  }
   function portalView(exam) {
-    const candidate = one('SELECT name FROM candidates WHERE id=?', exam.candidate_id);
-    const result = { ...cleanExam(exam), candidateName: candidate.name, company: config.company, allowAI: Boolean(exam.allow_ai), recordSwitch: Boolean(exam.record_switch), serverTime: now(), questionCount: json(exam.questions, []).length };
+    const candidate = one('SELECT c.name, j.title FROM candidates c JOIN jobs j ON j.id=c.job_id WHERE c.id=?', exam.candidate_id);
+    const result = { ...cleanExam(exam), candidateName: candidate.name, jobTitle: exam.job_title ?? candidate.title, company: config.company, allowAI: Boolean(exam.allow_ai), recordSwitch: Boolean(exam.record_switch), serverTime: now(), questionCount: json(exam.questions, []).length };
     delete result.candidateId; delete result.assessmentId; delete result.mailStatus;
+    if (exam.feedback) recordFeedbackAccess(exam.id, digest(exam.feedback));
     if (['in_progress', 'submitted'].includes(exam.status)) Object.assign(result, { questions: json(exam.questions, []).map(({ rubric, ...question }) => question), answers: json(exam.answers, {}), revision: exam.revision, usedAI: Boolean(exam.used_ai) });
     return result;
   }
@@ -452,10 +523,11 @@ export function createApp(overrides = {}) {
     limit(db, 'feedback-result:' + req.ip, 60, 15 * 60000);
     const { token: raw } = z.object({ token: z.string().regex(/^[A-Za-z0-9_-]{43}$/) }).parse(req.body);
     const result = one(`
-      SELECT e.feedback, l.feedback_hash FROM feedback_links l JOIN exams e ON e.id=l.exam_id
+      SELECT e.id, e.feedback, l.feedback_hash FROM feedback_links l JOIN exams e ON e.id=l.exam_id
       WHERE l.token_hash=? AND l.expires_at>? AND e.status='submitted' AND e.feedback IS NOT NULL
     `, digest(raw), now());
     if (!result || digest(result.feedback) !== result.feedback_hash) throw fail(410, '反馈链接已失效，请联系 HR');
+    recordFeedbackAccess(result.id, result.feedback_hash);
     const { message, score, publishedAt, basis } = json(result.feedback);
     res.json({ message, score, publishedAt, basis });
   });
@@ -469,7 +541,12 @@ export function createApp(overrides = {}) {
     if (!(accessEnd > issuedAt)) throw fail(410, '邀请不存在、已过期或已撤销，请联系 HR');
     const expiresAt = Math.min(issuedAt + 7 * dayMs, accessEnd);
     const raw = token();
-    run('INSERT INTO portal_sessions VALUES(?,?,?)', digest(raw), exam.id, new Date(expiresAt).toISOString());
+    transaction(db, () => {
+      run('INSERT INTO portal_sessions VALUES(?,?,?)', digest(raw), exam.id, new Date(expiresAt).toISOString());
+      if (!one("SELECT 1 FROM exam_operational_events WHERE exam_id=? AND action='exam.invite.opened'", exam.id)) {
+        recordExamOperation(exam.id, 'candidate', 'exam.invite.opened');
+      }
+    });
     setCookie(res, config, 'td_portal', raw, expiresAt - issuedAt, '/api/portal');
     res.json(portalView(exam));
   });
@@ -481,9 +558,10 @@ export function createApp(overrides = {}) {
     res.json({ id: req.exam.id });
   });
   app.post('/api/portal/start', portal, (req, res) => {
-    z.object({ consent: z.literal(true) }).parse(req.body);
+    const { duration } = z.object({ consent: z.literal(true), duration: z.number().int().positive().optional() }).parse(req.body);
     if (req.exam.status !== 'invited') throw fail(409, '测评已经开始或已经结束，请刷新');
-    const time = now(), deadline = new Date(Date.now() + req.exam.duration * 60000).toISOString();
+    if (duration !== undefined && duration !== req.exam.duration) throw fail(409, '作答时长已调整，请确认新时长后开始');
+    const time = now(), deadline = new Date(Date.parse(time) + req.exam.duration * 60000).toISOString();
     transaction(db, () => {
       run(`UPDATE exams SET status='in_progress',started_at=?,deadline_at=?,consent_at=? WHERE id=? AND status='invited'`, time, deadline, time, req.exam.id);
       applyExamStage(db, req.exam, 'exam.start', 'candidate'); audit(db, 'candidate', 'exam.start', req.exam.id);
@@ -494,10 +572,15 @@ export function createApp(overrides = {}) {
     if (exam.status !== 'in_progress') throw fail(409, '测评已经结束；超时仅保留截止前成功保存的内容');
     const keys = new Set(json(exam.questions, []).map(q => q.id));
     if (Object.keys(b.answers).some(key => !keys.has(key)) || Object.values(b.answers).reduce((sum, value) => sum + value.length, 0) > 500000) throw fail(400, '答案内容超过限制或含有无效题号');
+    const submittedAt = submit ? now() : null;
     transaction(db, () => {
-      const changed = run('UPDATE exams SET answers=?,revision=revision+1,status=?,submitted_at=?,used_ai=? WHERE id=? AND revision=? AND status=?', JSON.stringify(b.answers), submit ? 'submitted' : 'in_progress', submit ? now() : null, b.usedAI === undefined ? exam.used_ai : +b.usedAI, exam.id, b.revision, 'in_progress');
+      const changed = run('UPDATE exams SET answers=?,revision=revision+1,status=?,submitted_at=?,used_ai=? WHERE id=? AND revision=? AND status=?', JSON.stringify(b.answers), submit ? 'submitted' : 'in_progress', submittedAt, b.usedAI === undefined ? exam.used_ai : +b.usedAI, exam.id, b.revision, 'in_progress');
       if (!changed.changes) throw fail(409, '另一窗口已保存新版本，请先复制当前答案再刷新，避免覆盖');
-      if (submit) { applyExamStage(db, exam, 'exam.submit', 'candidate'); audit(db, 'candidate', 'exam.submit', exam.id); }
+      if (submit) {
+        reviewWorkflow.startReviewDeadline(exam.id, submittedAt);
+        applyExamStage(db, exam, 'exam.submit', 'candidate');
+        audit(db, 'candidate', 'exam.submit', exam.id);
+      }
     }); return portalView(one('SELECT * FROM exams WHERE id=?', exam.id));
   }
   app.put('/api/portal/answers', portal, (req, res) => res.json(saveAnswers(req, false)));
