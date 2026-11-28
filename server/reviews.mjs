@@ -323,9 +323,14 @@ export function createReviewWorkflow(db) {
     const rows = all(`
       SELECT e.id, e.submitted_at, e.feedback, p.due_at,
         (SELECT details FROM review_workflow_events w WHERE w.exam_id=e.id AND w.action='review.assign' ORDER BY id LIMIT 1) AS original_plan,
-        (SELECT min(created_at) FROM review_workflow_events w WHERE w.exam_id=e.id AND w.action='feedback.publish') AS first_decision
+        (SELECT min(created_at) FROM review_workflow_events w WHERE w.exam_id=e.id AND w.action='feedback.publish') AS first_decision,
+        retractions.last_retracted_at
       FROM candidates c JOIN exams e ON e.candidate_id=c.id
       LEFT JOIN review_plans p ON p.exam_id=e.id
+      LEFT JOIN (
+        SELECT resource_id, max(created_at) AS last_retracted_at FROM audit
+        WHERE action='feedback.retract' GROUP BY resource_id
+      ) retractions ON retractions.resource_id=e.id
       WHERE c.job_id=? AND e.status='submitted' AND e.submitted_at>=? AND e.submitted_at<=?
       ORDER BY e.submitted_at, e.id
     `, jobId, from, until);
@@ -337,7 +342,7 @@ export function createReviewWorkflow(db) {
         WHERE exam_id=? AND action='review.nudge' AND created_at>=? AND created_at<=?
       `, row.id, row.submitted_at, row.first_decision ?? now()).count;
       const common = [row.id, row.submitted_at, originalDue, row.due_at, row.first_decision, nudges];
-      if (!row.feedback) return [...common, '', '', '', ''];
+      if (!row.feedback) return [...common, '', '', '', '', row.last_retracted_at];
       const feedbackHash = digest(row.feedback);
       const notices = all(`
         SELECT action, min(created_at) AS at FROM exam_operational_events
@@ -346,7 +351,7 @@ export function createReviewWorkflow(db) {
       `, row.id, feedbackHash);
       const access = one('SELECT first_access_at FROM feedback_access_events WHERE exam_id=? AND feedback_hash=?', row.id, feedbackHash);
       return [...common, json(row.feedback).publishedAt, notices.find(item => item.action === 'feedback.notice.manual')?.at,
-        access?.first_access_at, notices.find(item => item.action === 'feedback.notice.confirmed')?.at];
+        access?.first_access_at, notices.find(item => item.action === 'feedback.notice.confirmed')?.at, row.last_retracted_at];
     });
   }
 

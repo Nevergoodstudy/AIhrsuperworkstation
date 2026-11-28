@@ -134,7 +134,9 @@ test('指定评审、独立草稿、改派、双评发布、撤回与历史记�
   assert.equal(values[2], plan.dueAt);
   assert.equal(values[3], plan.dueAt);
   assert.ok(values[4].startsWith(date));
-  assert.ok(values.slice(6).every(value => value.startsWith(date)));
+  assert.ok(values.slice(6, 10).every(value => value.startsWith(date)));
+  assert.match(header, /最近反馈撤回时间/);
+  assert.equal(values[10], '');
   assert.doesNotMatch(exported.body, /待考察|@example|部门独立评分|以补充面试/);
   const counted = (await details()).operationalEvents.filter(item => item.action === 'feedback.notice.manual');
   assert.equal(counted.length, 1);
@@ -160,6 +162,12 @@ test('指定评审、独立草稿、改派、双评发布、撤回与历史记�
   const assigned = published.workflow.assignments.find(task => task.userId === replacementId);
   assert.equal((await hr.call(route + '/review-reopen', 'POST', { taskId: assigned.id, version: assigned.version, reason: '补分' })).status, 409);
   assert.equal((await hr.call(route + '/feedback', 'DELETE')).status, 200);
+  const withdrawnRow = (await hr.call(exportPath)).body.trim().split('\r\n')[1];
+  const withdrawnCells = withdrawnRow.split(',').map(cell => cell.slice(1, -1));
+  assert.deepEqual(withdrawnCells.slice(6, 10), ['', '', '', '']);
+  assert.equal(withdrawnCells[10], f.db.prepare(
+    "SELECT created_at FROM audit WHERE resource_id=? AND action='feedback.retract'"
+  ).get(invitation.id).created_at);
   assert.equal((await candidate.call('/api/portal/me')).body.feedback, null);
   assert.equal((await result(finalLink)).status, 410);
   assert.equal((await hr.call(route + '/review-reopen', 'POST', { taskId: assigned.id, version: assigned.version, reason: '补分' })).status, 200);

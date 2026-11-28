@@ -476,7 +476,7 @@ export function createApp(overrides = {}) {
     if (from > to) throw fail(400, '起始日期不能晚于结束日期');
     const rows = reviewWorkflow.pilotRows(job.id, from + 'T00:00:00.000Z', to + 'T23:59:59.999Z');
     const header = ['测评编号', '提交时间', '首次承诺期限', '当前复核期限', '首次决定时间', '首次决定前登记催办数',
-      '当前反馈发布时间', '当前反馈手动通知时间', '当前反馈首次访问时间', '当前反馈候选人确认时间'];
+      '当前反馈发布时间', '当前反馈手动通知时间', '当前反馈首次访问时间', '当前反馈候选人确认时间', '最近反馈撤回时间'];
     audit(db, req.user.id, 'review.pilot.export', job.id);
     res.attachment('pilot-review.csv').type('text/csv; charset=utf-8')
       .send('\uFEFF' + [header, ...rows].map(row => row.map(csvCell).join(',')).join('\r\n'));
