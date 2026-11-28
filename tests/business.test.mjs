@@ -75,7 +75,44 @@ test('原件私有存储、下载、删除及持久化',async t=>{
 });
 test('真实邮件状态由发送服务结果决定',async t=>{
  const messages=[];const f=await fixture({smtpUrl:'smtp://example.test',mailFrom:'HR <hr@example.test>',mailer:{async sendMail(message){messages.push(message);return {accepted:[message.to],rejected:[]};}}});t.after(()=>f.cleanup());const hr=f.client();await hr.login();const b=await setupBusiness(hr);const link=await invite(hr,b,true);assert.equal(link.mailStatus,'accepted');assert.equal(messages.length,1);assert.ok(messages[0].text.includes(link.inviteUrl));assert.equal(f.db.prepare('SELECT mail_status FROM exams WHERE id=?').get(link.id).mail_status,'accepted');
- await hr.call('/api/exams/'+link.id+'/revoke','POST');f.config.mailer={async sendMail(){throw new Error('password must not leak');}};const failed=await invite(hr,b,true);assert.equal(failed.mailStatus,'failed');assert.doesNotMatch(failed.mailError,/password/);assert.ok(failed.inviteUrl);
+ await hr.call('/api/exams/'+link.id+'/revoke','POST');f.config.mailer={async sendMail(){throw Object.assign(new Error('password must not leak'), { responseCode: 550 });}};const failed=await invite(hr,b,true);assert.equal(failed.mailStatus,'failed');assert.doesNotMatch(failed.mailError,/password/);assert.ok(failed.inviteUrl);
+});
+
+test('邮件结果未知须核实后重发，并防止重复投递', async t => {
+ const receiving = Promise.withResolvers(), release = Promise.withResolvers();
+ let attempts = 0;
+ const f = await fixture({
+  smtpUrl: 'smtp://example.test', mailFrom: 'hr@example.test',
+  mailer: { async sendMail() {
+   attempts++;
+   if (attempts === 1) throw new Error('synthetic private provider detail');
+   receiving.resolve();
+   await release.promise;
+   return { accepted: ['candidate@example.test'] };
+  }}
+ });
+ t.after(() => f.cleanup());
+ const hr = f.client();
+ assert.equal((await hr.login()).status, 200);
+ const b = await setupBusiness(hr);
+ const link = await invite(hr, b, true);
+ assert.equal(link.mailStatus, 'unknown');
+ assert.doesNotMatch(link.mailError, /private provider/);
+ const route = '/api/exams/' + link.id + '/send';
+ const send = confirmUnknown => hr.call(route, 'POST', { inviteToken: link.token, confirmUnknown });
+ assert.equal((await send(false)).status, 409);
+ assert.equal(attempts, 1);
+ const retry = send(true);
+ try {
+  await Promise.race([receiving.promise, retry.then(() => assert.fail('邮件未开始发送'))]);
+  assert.equal((await send(true)).status, 409);
+ } finally { release.resolve(); }
+ assert.equal((await retry).body.mailStatus, 'accepted');
+ assert.equal((await send(true)).status, 409);
+ assert.equal(attempts, 2);
+ const history = (await hr.call('/api/exams/' + link.id)).body.operationalEvents;
+ assert.deepEqual(history.map(item => item.details.mailStatus), ['accepted', 'unknown']);
+ assert.doesNotMatch(JSON.stringify(history), /private provider/);
 });
 
 test('岗位、题目和测评方案的过期版本不会覆盖新数据',async t=>{

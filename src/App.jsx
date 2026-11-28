@@ -51,6 +51,23 @@ function Dashboard(){
 function Jobs(){
   const {data,hr,open,close,mutate}=useWorkspace();
   function edit(job){open(job?'编辑岗位':'创建岗位',<Form initial={job?{...job,requirementsText:job.requirements.join('\n')}:{title:'',department:'',location:'',description:'',requirementsText:'',status:'招聘中'}} fields={jobFields} onSubmit={async value=>{await mutate('/api/jobs'+(job?'/'+job.id:''),job?'PUT':'POST',{...value,requirements:value.requirementsText.split('\n').map(s=>s.trim()).filter(Boolean)});close();}}/>);}
+  function downloadPilot(job) {
+    const today = new Date();
+    const start = new Date(today.getTime() - 29 * 86400000);
+    open('导出试点记录', <Form initial={{ from: start.toISOString().slice(0, 10), to: today.toISOString().slice(0, 10) }}
+      fields={[
+        { key: 'from', label: '提交起始日（UTC）', type: 'date', required: true },
+        { key: 'to', label: '提交结束日（UTC）', type: 'date', required: true }
+      ]}
+      submit="下载 CSV" onSubmit={({ from, to }) => {
+        if (from > to) throw new Error('起始日期不能晚于结束日期');
+        const link = document.createElement('a');
+        link.href = '/api/jobs/' + job.id + '/pilot.csv?' + new URLSearchParams({ from, to });
+        link.download = 'pilot-review.csv';
+        link.click();
+        close();
+      }}/>);
+  }
   return <><Heading title="招聘岗位" description="明确岗位要求，所有候选人和测评均归属具体岗位。">{hr&&<Button onClick={()=>edit()}><Plus size={17}/>创建岗位</Button>}</Heading>{!data.jobs.length?<Empty>暂无岗位。</Empty>:<div className="card-grid">{data.jobs.map(job=><Panel key={job.id} title={job.title} actions={<Badge>{job.status}</Badge>}><div className="stack pad"><p className="muted">{job.department} · {job.location}</p><p className="pre-wrap">{job.description}</p><div className="tags">{job.requirements.map(r=><Badge key={r}>{r}</Badge>)}</div><p>{data.candidates.filter(c=>c.jobId===job.id).length} 位候选人</p>{hr && <div className="inline-actions">
     <Button secondary onClick={() => edit(job)}>编辑岗位</Button>
     <Button secondary onClick={() => open('岗位评审默认安排', <JobReviewPolicyForm jobId={job.id} ownerId={data.user.id}
@@ -58,6 +75,7 @@ function Jobs(){
         await mutate('/api/jobs/' + job.id + '/review-policy', 'PUT', values, '岗位评审默认安排已保存');
         close();
       }}/>) }>岗位评审默认安排</Button>
+    <Button secondary onClick={() => downloadPilot(job)}>导出试点记录</Button>
   </div>}</div></Panel>)}</div>}</>;
 }
 function CandidateTable({candidates}){
@@ -96,9 +114,37 @@ function AssessmentForm({assessment}){
   const {data,mutate,close}=useWorkspace();return <Form initial={assessment||{jobId:data.jobs[0]?.id||'',name:'',duration:60,questionIds:[],allowAI:false,randomize:false,recordSwitch:false}} fields={[textField('name','方案名称'),{key:'jobId',label:'所属岗位',type:'select',required:true,options:choices(data.jobs)},{key:'duration',label:'总时长（分钟）',type:'number',min:1,max:240,required:true},{key:'allowAI',label:'允许使用 AI（仍需候选人披露）',type:'checkbox'},{key:'randomize',label:'随机排列题目',type:'checkbox'},{key:'recordSwitch',label:'记录页面隐藏次数（会向候选人告知，仅作复核参考）',type:'checkbox'}]} onSubmit={async value=>{if(!value.questionIds.length)throw new Error('请至少选择一道题');await mutate('/api/assessments'+(assessment?'/'+assessment.id:''),assessment?'PUT':'POST',value);close();}}>{(values,change)=><div className="question-picker"><strong>选择题目 · 已选 {values.questionIds.length} 道</strong>{data.questions.filter(q=>q.active||values.questionIds.includes(q.id)).map(q=><label className="check-line" key={q.id}><input type="checkbox" checked={values.questionIds.includes(q.id)} onChange={e=>change('questionIds',e.target.checked?[...values.questionIds,q.id]:values.questionIds.filter(id=>id!==q.id))}/><span>{q.title}<small>{q.competency} · {q.minutes} 分钟{!q.active&&' · 已停用，请移除'}</small></span></label>)}</div>}</Form>;
 }
 function InviteForm({candidate}){
-  const {data,refresh,notify}=useWorkspace();const [invitation,setInvitation]=useState(null),[error,setError]=useState('');
+  const {data,refresh,notify}=useWorkspace();const [invitation,setInvitation]=useState(null),[error,setError]=useState(''),[sending,setSending]=useState(false),[confirmed,setConfirmed]=useState(false);
   const options=data.assessments.filter(a=>a.jobId===candidate.jobId);
-  if(invitation)return <div className="stack"><div className="alert">邀请已创建。链接只在本次创建时展示，请立即保存并通过可信渠道发送给候选人。</div><Field label="候选人专属邀请链接"><input readOnly value={invitation.inviteUrl} onFocus={e=>e.target.select()}/></Field><Button onClick={async()=>{try{await navigator.clipboard.writeText(invitation.inviteUrl);notify('邀请链接已复制');}catch{setError('自动复制不可用，请选中上方链接后复制。');}}}>复制邀请链接</Button><p>{invitation.mailStatus==='accepted'?'邮件已被 SMTP 服务接受，最终送达请以邮箱回执为准。':invitation.mailStatus==='failed'?'邮件发送失败：'+invitation.mailError:'尚未发送邮件，请手动分享链接。'}</p><ErrorBox error={error}/><Button secondary disabled={!data.readiness.email} onClick={async()=>{try{const r=await api('/api/exams/'+invitation.id+'/send',{method:'POST',body:{inviteToken:invitation.inviteUrl.split('/').pop()}});setInvitation({...invitation,mailStatus:r.mailStatus,mailError:''});await refresh();}catch(e){setError(e);}}}>通过邮件发送 / 重试</Button><p className="muted">链接丢失时可撤销旧邀请并创建新邀请。不要公开分享专属链接。</p></div>;
+  if (invitation) return <div className="stack">
+    <p>邀请已创建。请保存链接并通过可信渠道分享。</p>
+    <Field label="候选人专属邀请链接"><input readOnly value={invitation.inviteUrl} onFocus={event => event.target.select()}/></Field>
+    <Button onClick={async () => {
+      try { await navigator.clipboard.writeText(invitation.inviteUrl); notify('邀请链接已复制'); }
+      catch { setError('自动复制不可用，请选中上方链接后复制。'); }
+    }}>复制邀请链接</Button>
+    <p role="status">{invitation.mailStatus === 'accepted' ? '邮件已被 SMTP 服务接受，最终送达请以邮箱回执为准。' :
+      invitation.mailError || '尚未发送邮件，请手动分享链接。'}</p>
+    {invitation.mailStatus === 'unknown' && <label className="check-line">
+      <input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)}/>已核实，可重新发送
+    </label>}
+    <ErrorBox error={error}/>
+    <Button secondary disabled={!data.readiness.email || sending || invitation.mailStatus === 'accepted' ||
+      (invitation.mailStatus === 'unknown' && !confirmed)} onClick={async () => {
+      setSending(true);
+      setError('');
+      try {
+        const result = await api('/api/exams/' + invitation.id + '/send', { method: 'POST', body: {
+          inviteToken: invitation.inviteUrl.split('/').pop(), confirmUnknown: confirmed
+        }});
+        setInvitation({ ...invitation, ...result });
+        setConfirmed(false);
+        await refresh();
+      } catch (error) { setError(error); }
+      finally { setSending(false); }
+    }}>通过邮件发送 / 重试</Button>
+    <p className="muted">链接丢失时可撤销旧邀请并创建新邀请。</p>
+  </div>;
   if(!options.length)return <Empty>该岗位尚无测评方案，请先创建对应方案。</Empty>;
   return <Form initial={{assessmentId:options[0].id,validDays:7,sendEmail:false}} fields={[{key:'assessmentId',label:'测评方案',type:'select',options:choices(options),required:true},{key:'validDays',label:'邀请有效天数',type:'number',min:1,max:14,required:true},{key:'sendEmail',label:'同时发送邮件（需已配置 SMTP 且候选人有邮箱）',type:'checkbox'}]} submit="创建专属邀请" onSubmit={async value=>{const result=await api('/api/exams',{method:'POST',body:{...value,candidateId:candidate.id}});setInvitation(result);await refresh();}}><p>候选人：{candidate.name} · 创建邀请时固定题目与评分要点；每位候选人只能有一份待开始或进行中的测评。面试中、录用、不合适等人工阶段会保留；人工改阶段后，有效测评仍可完成，但不会自动覆盖该阶段。如需结束作答，请同时撤销测评。</p></Form>;
 }
@@ -143,6 +189,21 @@ function ExamDetail({ examId }) {
   function editPlan() {
     open('安排独立评审', <ReviewPlanForm exam={exam} ownerId={data.user.id} save={async values => {
       await mutate(route + '/review-plan', 'PUT', values, '评审安排已保存');
+      backToExam();
+    }}/>);
+  }
+
+  function recordFollowUp(action) {
+    const labels = {
+      nudge: ['登记催办', '确认已催办评审或招聘决定？'],
+      notified: ['登记反馈已通知', '确认已向候选人发送当前版本的反馈？'],
+      confirmed: ['登记候选人确认', '确认候选人已告知 HR 可以查看当前反馈？']
+    };
+    const [label, message] = labels[action];
+    open(label, <Confirm message={message} action={async () => {
+      const path = action === 'nudge' ? '/review-nudge' : '/feedback-notice';
+      const body = action === 'nudge' ? undefined : { confirmed: action === 'confirmed' };
+      await mutate(route + path, 'POST', body, '记录已保存');
       backToExam();
     }}/>);
   }
@@ -208,14 +269,20 @@ function ExamDetail({ examId }) {
         }}/>)
       }>登记手动通知</Button>}
     </div>}
+    {hr && exam.mailStatus === 'unknown' && <p className="muted">邀请邮件结果未知，请核实收件情况。</p>}
     {hr && exam.operationalEvents.length > 0 && <details>
       <summary>通知与调整记录</summary>
       <ul>{exam.operationalEvents.map((event, index) => <li key={index}>
         {date(event.at)} · {event.action === 'exam.invite.manual' ? 'HR 已登记手动通知' :
           event.action === 'exam.invite.opened' ? '候选人入口首次打开' :
+          event.action === 'exam.email' ? ({ accepted: 'SMTP 已接受', failed: 'SMTP 明确失败', unknown: 'SMTP 发送结果未知' })[event.details.mailStatus] :
+          event.action === 'review.nudge' ? 'HR 已登记催办' :
+          event.action === 'feedback.notice.manual' ? '已登记手动通知反馈' :
+          event.action === 'feedback.notice.confirmed' ? '已登记候选人确认可查看反馈' :
           '作答时长从 ' + event.details.previous + ' 分钟调整为 ' + event.details.duration + ' 分钟 · ' + event.details.reason}
       </li>)}</ul>
     </details>}
+    {hr && submitted && !exam.feedback && <Button secondary onClick={() => recordFollowUp('nudge')}>登记催办</Button>}
     {canEditPlan && <Button secondary onClick={editPlan}>安排独立评审</Button>}
     <WorkflowStatus exam={exam} hr={hr} edit={editPlan} reopen={reopen}/>
     {submitted && <>
@@ -255,6 +322,10 @@ function ExamDetail({ examId }) {
       {exam.feedback && <Panel title="已发布给候选人的反馈"><div className="stack pad">
         <p>{exam.feedback.message}</p><p>人工评分 {exam.feedback.score} / 100 · {exam.feedback.basis}</p>
         {hr && <p className="muted">{exam.feedbackFirstAccessAt ? '首次结果访问 ' + date(exam.feedbackFirstAccessAt) : '暂无候选人结果访问记录'}</p>}
+        {hr && <div className="inline-actions">
+          <Button secondary onClick={() => recordFollowUp('notified')}>登记反馈已通知</Button>
+          <Button secondary onClick={() => recordFollowUp('confirmed')}>登记候选人确认</Button>
+        </div>}
         {hr && <FeedbackLinkActions issue={() => api(route + '/feedback-link', { method: 'POST' })}
           revoke={() => api(route + '/feedback-link', { method: 'DELETE' })}/>}
         {hr && <Button secondary onClick={async () => {

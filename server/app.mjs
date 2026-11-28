@@ -30,6 +30,7 @@ const questionSchema = z.object({ title: required(10000), competency: required(1
 const assessmentSchema = z.object({ jobId: z.string().uuid(), name: required(100), duration: z.number().int().min(1).max(240), questionIds: z.array(z.string().uuid()).min(1).max(50), allowAI: z.boolean(), randomize: z.boolean(), recordSwitch: z.boolean() });
 const answerSchema = z.object({ revision: z.number().int().min(0), answers: z.record(z.string().uuid(), z.string().max(20000)), usedAI: z.boolean().optional() });
 const candidateSchema = z.object({ jobId: z.string().uuid(), name: required(100), email: email.or(z.literal('')), phone: text(50), resumeText: required(500000), consent: z.literal(true) });
+const csvCell = value => { let v = String(value ?? '').replace(/[\r\n]/g, ' '); if (/^[=+@\-\t]/.test(v.trimStart())) v = String.fromCharCode(39) + v; return String.fromCharCode(34) + v.replaceAll(String.fromCharCode(34), String.fromCharCode(34).repeat(2)) + String.fromCharCode(34); };
 function shuffle(array) { for (let i = array.length - 1; i > 0; i--) { const j = randomInt(i + 1); [array[i], array[j]] = [array[j], array[i]]; } return array; }
 export function createApp(overrides = {}) {
   const config = getConfig(overrides), db = openDatabase(config.dataDir), app = express();
@@ -291,9 +292,9 @@ export function createApp(overrides = {}) {
     res.json({ analysis: analysisView(one('SELECT * FROM candidates WHERE id=?', c.id)) });
   });
   app.get('/api/export/candidates', staff, hr, (req, res) => {
-    const cells = value => { let v = String(value ?? '').replace(/[\r\n]/g, ' '); if (/^[=+@\-\t]/.test(v.trimStart())) v = String.fromCharCode(39) + v; return String.fromCharCode(34) + v.replaceAll(String.fromCharCode(34), String.fromCharCode(34).repeat(2)) + String.fromCharCode(34); };
+
     const rows = [['姓名', '邮箱', '电话', '岗位', '阶段', '关键词或证据覆盖率', '分析方式', '分析状态', '创建时间'], ...all('SELECT c.*,j.title FROM candidates c JOIN jobs j ON j.id=c.job_id ORDER BY c.created_at DESC').map(c => { const a = analysisView(c); return [c.name, c.email, c.phone, c.title, c.stage, a.stale ? '' : a.score ?? '', a.method, a.stale ? a.staleReason : '当前版本', c.created_at]; })];
-    audit(db, req.user.id, 'candidate.export', 'workspace'); res.attachment('candidates.csv').type('text/csv; charset=utf-8').send('\uFEFF' + rows.map(row => row.map(cells).join(',')).join('\r\n'));
+    audit(db, req.user.id, 'candidate.export', 'workspace'); res.attachment('candidates.csv').type('text/csv; charset=utf-8').send('\uFEFF' + rows.map(row => row.map(csvCell).join(',')).join('\r\n'));
   });
   app.post('/api/questions', staff, hr, (req, res) => {
     const b = questionSchema.parse(req.body), key = id(), time = now();
@@ -320,15 +321,39 @@ export function createApp(overrides = {}) {
     if (!run('UPDATE assessments SET job_id=?,name=?,duration=?,question_ids=?,allow_ai=?,randomize=?,record_switch=?,updated_at=?,version=version+1 WHERE id=? AND version=?', b.jobId, b.name, b.duration, JSON.stringify(b.questionIds), +b.allowAI, +b.randomize, +b.recordSwitch, now(), req.params.id, b.version).changes) throw fail(409, '方案已被修改或不存在，请刷新后重试');
     audit(db, req.user.id, 'assessment.update', req.params.id); res.json({ ok: true });
   });
-  async function deliverInvitation(exam, candidate, raw) {
+  async function deliverInvitation(exam, candidate, raw, actor, confirmUnknown = false) {
     if (!config.smtpUrl || !config.mailFrom) throw fail(503, '邮件服务尚未配置，请复制邀请链接发送');
     if (!candidate.email) throw fail(400, '候选人尚未填写邮箱');
+    if (exam.mail_status === 'unknown' && !confirmUnknown) {
+      throw fail(409, '上次邮件结果未知，请向邮件服务或候选人核实再重试');
+    }
+    if (['sending','accepted'].includes(exam.mail_status)) throw fail(409, '此邀请正在发送或已被 SMTP 接受');
+    limit(db, 'mail:' + actor, 30, 3600000);
+    run("UPDATE exams SET mail_status='sending' WHERE id=?", exam.id);
+    let mailStatus;
     try {
       const transport = config.mailer ?? createMailTransport(config);
-      const info = await transport.sendMail({ from: config.mailFrom, to: candidate.email, subject: config.company + ' · 测评邀请', text: candidate.name + '，您好：\n请通过以下个人链接完成 ' + exam.name + '。请勿转发此链接。\n' + config.appUrl + '/#/invite/' + raw + '\n邀请有效期至：' + exam.expires_at + '。开始后限时 ' + exam.duration + ' 分钟。' });
-      if (info.rejected?.length) throw new Error('rejected');
-      run(`UPDATE exams SET mail_status='accepted' WHERE id=?`, exam.id); return 'accepted';
-    } catch { run(`UPDATE exams SET mail_status='failed' WHERE id=?`, exam.id); throw fail(502, '邮件未被发送服务接受；可复制链接发送，或检查 SMTP 后重试'); }
+      const info = await transport.sendMail({
+        from: config.mailFrom, to: candidate.email, subject: config.company + ' · 测评邀请',
+        text: candidate.name + '，您好：\n请通过以下个人链接完成 ' + exam.name + '。请勿转发此链接。\n'
+          + config.appUrl + '/#/invite/' + raw + '\n邀请有效期至：' + exam.expires_at + '。开始后限时 ' + exam.duration + ' 分钟。'
+      });
+      mailStatus = info.accepted?.length ? 'accepted' : 'failed';
+    } catch (error) {
+      // A connection close without a negative SMTP reply may follow message acceptance.
+      const refused = error.responseCode >= 400 && error.responseCode < 600;
+      mailStatus = refused ? 'failed' : 'unknown';
+    }
+    transaction(db, () => {
+      if (run('UPDATE exams SET mail_status=? WHERE id=?', mailStatus, exam.id).changes) {
+        recordExamOperation(exam.id, actor, 'exam.email', { mailStatus });
+      }
+    });
+    const mailError = {
+      failed: 'SMTP 未接受邮件，可检查邮件配置后重试。',
+      unknown: '发送结果未知，请核实后再重试或改用人工通知。'
+    }[mailStatus] ?? '';
+    return { mailStatus, mailError };
   }
   app.post('/api/exams', staff, hr, async (req, res) => {
     const b = z.object({ candidateId: z.string().uuid(), assessmentId: z.string().uuid(), validDays: z.number().int().min(1).max(14).default(7), sendEmail: z.boolean().default(false) }).parse(req.body);
@@ -351,15 +376,23 @@ export function createApp(overrides = {}) {
       reviewWorkflow.assignFromJob(key, job, req.user, expires);
       applyExamStage(db, one('SELECT * FROM exams WHERE id=?', key), 'exam.invite', req.user.id); audit(db, req.user.id, 'exam.invite', key);
     });
-    let mailStatus = 'not_sent', mailError = '';
-    if (b.sendEmail) { try { mailStatus = await deliverInvitation(one('SELECT * FROM exams WHERE id=?', key), candidate, raw); } catch (error) { mailStatus = 'failed'; mailError = error.message; run(`UPDATE exams SET mail_status='failed' WHERE id=?`, key); } }
-    res.status(201).json({ id: key, inviteUrl: config.appUrl + '/#/invite/' + raw, mailStatus, mailError });
+    let mail = { mailStatus: 'not_sent', mailError: '' };
+    if (b.sendEmail) {
+      try { mail = await deliverInvitation(one('SELECT * FROM exams WHERE id=?', key), candidate, raw, req.user.id); }
+      catch (error) {
+        if (!error.status) throw error;
+        mail.mailError = error.message;
+      }
+    }
+    res.status(201).json({ id: key, inviteUrl: config.appUrl + '/#/invite/' + raw, ...mail });
   });
   app.post('/api/exams/:id/send', staff, hr, async (req, res) => {
-    const { inviteToken } = z.object({ inviteToken: required(100) }).parse(req.body), exam = examFor(req.user, req.params.id);
+    const { inviteToken, confirmUnknown } = z.object({ inviteToken: required(100), confirmUnknown: z.boolean().default(false) }).parse(req.body);
+    const exam = examFor(req.user, req.params.id);
     if (exam.status !== 'invited' || digest(inviteToken) !== exam.token_hash) throw fail(400, '链接无效或测评已开始');
-    limit(db, 'mail:' + req.user.id, 30, 3600000);
-    const mailStatus = await deliverInvitation(exam, candidateFor(req.user, exam.candidate_id), inviteToken); audit(db, req.user.id, 'exam.email', exam.id); res.json({ mailStatus });
+    const result = await deliverInvitation(exam, candidateFor(req.user, exam.candidate_id), inviteToken, req.user.id, confirmUnknown);
+    if (result.mailStatus === 'failed') return res.status(502).json({ error: result.mailError });
+    res.status(result.mailStatus === 'unknown' ? 202 : 200).json(result);
   });
   app.put('/api/exams/:id/duration', staff, hr, (req, res) => {
     const { duration, previous, reason } = z.object({
@@ -406,7 +439,10 @@ export function createApp(overrides = {}) {
           ? one('SELECT first_access_at FROM feedback_access_events WHERE exam_id=? AND feedback_hash=?', exam.id, digest(exam.feedback))?.first_access_at ?? null
           : null,
         operationalEvents: all("SELECT action,details,created_at FROM exam_operational_events WHERE exam_id=? ORDER BY id DESC LIMIT 20", exam.id)
-          .map(event => ({ action: event.action, details: json(event.details), at: event.created_at }))
+          .map(event => ({
+            action: event.action, at: event.created_at,
+            details: ['exam.duration.adjust', 'exam.email'].includes(event.action) ? json(event.details) : {}
+          }))
       } : {}),
       ...reviewWorkflow.state(exam, req.user, job.department)
     };
@@ -414,6 +450,36 @@ export function createApp(overrides = {}) {
       detail.answers = Object.fromEntries(Object.entries(answers).map(([key, value]) => [key, redact(value)]));
     }
     res.json(detail);
+  });
+  app.post('/api/exams/:id/review-nudge', staff, hr, (req, res) => {
+    const exam = examFor(req.user, req.params.id);
+    if (exam.status !== 'submitted' || exam.feedback) throw fail(409, '只能为待复核或待决定的答卷登记催办');
+    transaction(db, () => recordExamOperation(exam.id, req.user.id, 'review.nudge'));
+    res.json({ ok: true });
+  });
+  app.post('/api/exams/:id/feedback-notice', staff, hr, (req, res) => {
+    const exam = examFor(req.user, req.params.id);
+    if (!exam.feedback) throw fail(409, '请先发布反馈');
+    const { confirmed } = z.object({ confirmed: z.boolean().default(false) }).parse(req.body);
+    const action = confirmed ? 'feedback.notice.confirmed' : 'feedback.notice.manual';
+    const feedbackHash = digest(exam.feedback);
+    transaction(db, () => {
+      if (!one(`
+        SELECT 1 FROM exam_operational_events WHERE exam_id=? AND action=? AND json_extract(details,'$.feedbackHash')=?
+      `, exam.id, action, feedbackHash)) recordExamOperation(exam.id, req.user.id, action, { feedbackHash });
+    });
+    res.json({ ok: true });
+  });
+  app.get('/api/jobs/:id/pilot.csv', staff, hr, (req, res) => {
+    const job = jobFor(req.user, req.params.id);
+    const { from, to } = z.object({ from: z.iso.date(), to: z.iso.date() }).parse(req.query);
+    if (from > to) throw fail(400, '起始日期不能晚于结束日期');
+    const rows = reviewWorkflow.pilotRows(job.id, from + 'T00:00:00.000Z', to + 'T23:59:59.999Z');
+    const header = ['测评编号', '提交时间', '首次承诺期限', '当前复核期限', '首次决定时间', '首次决定前登记催办数',
+      '当前反馈发布时间', '当前反馈手动通知时间', '当前反馈首次访问时间', '当前反馈候选人确认时间'];
+    audit(db, req.user.id, 'review.pilot.export', job.id);
+    res.attachment('pilot-review.csv').type('text/csv; charset=utf-8')
+      .send('\uFEFF' + [header, ...rows].map(row => row.map(csvCell).join(',')).join('\r\n'));
   });
   app.get('/api/exams/:id/review-options', staff, hr, (req, res) => {
     const exam = examFor(req.user, req.params.id);

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { json, transaction } from './db.mjs';
-import { audit, fail, id, now, redact } from './security.mjs';
+import { audit, digest, fail, id, now, redact } from './security.mjs';
 
 const text = max => z.string().trim().max(max);
 const required = max => text(max).min(1);
@@ -319,5 +319,36 @@ export function createReviewWorkflow(db) {
     return { tasks, nextCursor: rows.length > pageSize ? { dueAt: last.dueAt, examId: last.examId } : null };
   }
 
-  return { scopeExam, state, options, configure, save, reopen, publish, retract, tasksFor, jobPolicy, configureJob, assignFromJob, startReviewDeadline };
+  function pilotRows(jobId, from, until) {
+    const rows = all(`
+      SELECT e.id, e.submitted_at, e.feedback, p.due_at,
+        (SELECT details FROM review_workflow_events w WHERE w.exam_id=e.id AND w.action='review.assign' ORDER BY id LIMIT 1) AS original_plan,
+        (SELECT min(created_at) FROM review_workflow_events w WHERE w.exam_id=e.id AND w.action='feedback.publish') AS first_decision
+      FROM candidates c JOIN exams e ON e.candidate_id=c.id
+      LEFT JOIN review_plans p ON p.exam_id=e.id
+      WHERE c.job_id=? AND e.status='submitted' AND e.submitted_at>=? AND e.submitted_at<=?
+      ORDER BY e.submitted_at, e.id
+    `, jobId, from, until);
+    return rows.map(row => {
+      const original = json(row.original_plan);
+      const originalDue = original?.dueHours ? addHours(row.submitted_at, original.dueHours) : original?.after?.dueAt;
+      const nudges = one(`
+        SELECT count(*) AS count FROM exam_operational_events
+        WHERE exam_id=? AND action='review.nudge' AND created_at>=? AND created_at<=?
+      `, row.id, row.submitted_at, row.first_decision ?? now()).count;
+      const common = [row.id, row.submitted_at, originalDue, row.due_at, row.first_decision, nudges];
+      if (!row.feedback) return [...common, '', '', '', ''];
+      const feedbackHash = digest(row.feedback);
+      const notices = all(`
+        SELECT action, min(created_at) AS at FROM exam_operational_events
+        WHERE exam_id=? AND action IN ('feedback.notice.manual','feedback.notice.confirmed')
+          AND json_extract(details,'$.feedbackHash')=? GROUP BY action
+      `, row.id, feedbackHash);
+      const access = one('SELECT first_access_at FROM feedback_access_events WHERE exam_id=? AND feedback_hash=?', row.id, feedbackHash);
+      return [...common, json(row.feedback).publishedAt, notices.find(item => item.action === 'feedback.notice.manual')?.at,
+        access?.first_access_at, notices.find(item => item.action === 'feedback.notice.confirmed')?.at];
+    });
+  }
+
+  return { scopeExam, state, options, configure, save, reopen, publish, retract, tasksFor, jobPolicy, configureJob, assignFromJob, startReviewDeadline, pilotRows };
 }

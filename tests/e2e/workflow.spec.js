@@ -269,6 +269,16 @@ test('我的待办与独立评审走通发布、只读结果和撤回', async ({
     await expect(decision.getByRole('heading', { name: '已发布给候选人的反馈' })).toHaveCount(0);
     await candidate.goto(resultLink);
     await expect(candidate.getByRole('alert')).toContainText('反馈链接已失效');
+
+    await hr.getByRole('button', { name: '关闭弹窗' }).click();
+    await hr.getByRole('button', { name: '招聘岗位', exact: true }).click();
+    const jobCard = hr.locator('.card-grid > .panel').filter({
+      has: hr.getByRole('heading', { name: '岗位默认评审试点', exact: true })
+    });
+    await jobCard.getByRole('button', { name: '导出试点记录' }).click();
+    const download = hr.waitForEvent('download');
+    await hr.getByRole('dialog').getByRole('button', { name: '下载 CSV', exact: true }).click();
+    expect((await download).suggestedFilename()).toBe('pilot-review.csv');
   } finally {
     await Promise.all(contexts.map(context => context.close()));
   }

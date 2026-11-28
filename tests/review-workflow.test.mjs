@@ -89,8 +89,16 @@ test('指定评审、独立草稿、改派、双评发布、撤回与历史记�
     evidence: [{ questionId: b.questionId, rationale: '答卷描述事务但缺少补偿步骤' }]
   };
   assert.equal((await hr.call(route + '/feedback', 'POST', { message: '感谢作答', decision })).status, 400);
+  assert.equal((await reviewer.call(route + '/review-nudge', 'POST')).status, 403);
+  assert.equal((await hr.call(route + '/review-nudge', 'POST')).status, 200);
   const complete = { message: '感谢作答', decision: { ...decision, disagreement: '以补充面试核实分歧' } };
   assert.equal((await hr.call(route + '/feedback', 'POST', complete)).status, 200);
+  assert.equal((await hr.call(route + '/review-nudge', 'POST')).status, 409);
+  const notice = route + '/feedback-notice';
+  assert.equal((await reviewer.call(notice, 'POST', { confirmed: true })).status, 403);
+  assert.equal((await hr.call(notice, 'POST', { confirmed: false })).status, 200);
+  assert.equal((await hr.call(notice, 'POST', { confirmed: false })).status, 200);
+  assert.equal((await hr.call(notice, 'POST', { confirmed: true })).status, 200);
   const view = (await candidate.call('/api/portal/me')).body;
   assert.equal(view.feedback.score, 60);
   assert.equal(view.workflow, undefined);
@@ -112,6 +120,25 @@ test('指定评审、独立草稿、改派、双评发布、撤回与历史记�
   assert.equal((await result(firstLink)).status, 410);
   assert.equal((await result(secondLink)).status, 200);
   assert.ok((await details()).feedbackFirstAccessAt);
+  const date = new Date().toISOString().slice(0, 10);
+  const exportPath = '/api/jobs/' + b.jobId + '/pilot.csv?from=' + date + '&to=' + date;
+  assert.equal((await reviewer.call(exportPath)).status, 403);
+  const exported = await hr.call(exportPath);
+  assert.equal(exported.status, 200);
+  const [header, row] = exported.body.trim().split('\r\n');
+  assert.match(header, /首次决定前登记催办数/);
+  const values = row.split(',').map(cell => cell.slice(1, -1));
+  assert.equal(values[0], invitation.id);
+  assert.equal(values[5], '1');
+  assert.ok(values[1].startsWith(date));
+  assert.equal(values[2], plan.dueAt);
+  assert.equal(values[3], plan.dueAt);
+  assert.ok(values[4].startsWith(date));
+  assert.ok(values.slice(6).every(value => value.startsWith(date)));
+  assert.doesNotMatch(exported.body, /待考察|@example|部门独立评分|以补充面试/);
+  const counted = (await details()).operationalEvents.filter(item => item.action === 'feedback.notice.manual');
+  assert.equal(counted.length, 1);
+  assert.deepEqual(counted[0].details, {});
   assert.equal(f.db.prepare('SELECT count(*) AS count FROM feedback_access_events WHERE exam_id=?').get(invitation.id).count, 1);
 
   const backupRoot = await mkdtemp(path.join(os.tmpdir(), 'talent-feedback-'));
