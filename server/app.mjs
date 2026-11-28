@@ -535,7 +535,23 @@ export function createApp(overrides = {}) {
     });
     res.json({ ok: true });
   });
-  app.get('/api/admin', staff, admin, (req, res) => res.json({ users: all('SELECT * FROM users ORDER BY created_at').map(publicUser), audit: all('SELECT a.*,u.name AS actor FROM audit a LEFT JOIN users u ON u.id=a.actor_id ORDER BY a.id DESC LIMIT 200') }));
+  app.get('/api/admin', staff, admin, (req, res) => {
+    const { resourceId, from, to } = z.object({
+      resourceId: required(200).optional(), from: z.iso.date().optional(), to: z.iso.date().optional()
+    }).parse(req.query);
+    if (from && to && from > to) throw fail(400, '起始日期不能晚于结束日期');
+    const filters = [
+      ...(resourceId ? [['a.resource_id = ?', resourceId]] : []),
+      ...(from ? [['a.created_at >= ?', from + 'T00:00:00.000Z']] : []),
+      ...(to ? [['a.created_at <= ?', to + 'T23:59:59.999Z']] : [])
+    ];
+    const where = filters.length ? 'WHERE ' + filters.map(([predicate]) => predicate).join(' AND ') : '';
+    const auditRows = all(`
+      SELECT a.*,u.name AS actor FROM audit a LEFT JOIN users u ON u.id=a.actor_id
+      ${where} ORDER BY a.id DESC LIMIT 200
+    `, ...filters.map(([, value]) => value));
+    res.json({ users: all('SELECT * FROM users ORDER BY created_at').map(publicUser), audit: auditRows });
+  });
   app.post('/api/admin/users', staff, admin, async (req, res) => {
     const b = z.object({ name: required(100), email, password, role: z.enum(['admin', 'hr', 'department']), department: text(100) }).parse(req.body);
     if (b.role === 'department' && !b.department) throw fail(400, '部门账号必须填写所属部门');

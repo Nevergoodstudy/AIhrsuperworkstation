@@ -88,11 +88,19 @@ test('指定评审、独立草稿、改派、双评发布、撤回与历史记�
     version: ready.workflow.version, outcome: '补充考察', reason: '先核实失败补偿',
     evidence: [{ questionId: b.questionId, rationale: '答卷描述事务但缺少补偿步骤' }]
   };
+  const reviewerAccount = '/api/admin/users/' + f.accounts.department.id;
+  assert.equal((await second.call(reviewerAccount, 'PATCH', { active: false })).status, 200);
+  assert.equal((await reviewer.call(route)).status, 401);
+  assert.equal((await details()).workflow.canPublish, false);
+  assert.equal((await hr.call(route + '/feedback', 'POST', { message: '评审账号已停用', decision })).status, 409);
+  assert.equal((await second.call(reviewerAccount, 'PATCH', { active: true })).status, 200);
+  assert.equal((await reviewer.login('department')).status, 200);
   assert.equal((await hr.call(route + '/feedback', 'POST', { message: '感谢作答', decision })).status, 400);
   assert.equal((await reviewer.call(route + '/review-nudge', 'POST')).status, 403);
   assert.equal((await hr.call(route + '/review-nudge', 'POST')).status, 200);
   const complete = { message: '感谢作答', decision: { ...decision, disagreement: '以补充面试核实分歧' } };
-  assert.equal((await hr.call(route + '/feedback', 'POST', complete)).status, 200);
+  const publications = await Promise.all([hr, second].map(client => client.call(route + '/feedback', 'POST', complete)));
+  assert.deepEqual(publications.map(response => response.status).sort(), [200, 409]);
   assert.equal((await hr.call(route + '/review-nudge', 'POST')).status, 409);
   const notice = route + '/feedback-notice';
   assert.equal((await reviewer.call(notice, 'POST', { confirmed: true })).status, 403);
@@ -161,12 +169,19 @@ test('指定评审、独立草稿、改派、双评发布、撤回与历史记�
   const published = await details();
   const assigned = published.workflow.assignments.find(task => task.userId === replacementId);
   assert.equal((await hr.call(route + '/review-reopen', 'POST', { taskId: assigned.id, version: assigned.version, reason: '补分' })).status, 409);
-  assert.equal((await hr.call(route + '/feedback', 'DELETE')).status, 200);
+  const [retracted, competingPublication] = await Promise.all([
+    hr.call(route + '/feedback', 'DELETE'),
+    second.call(route + '/feedback', 'POST', complete)
+  ]);
+  assert.equal(retracted.status, 200);
+  assert.ok([200, 409].includes(competingPublication.status));
+  assert.equal((await result(finalLink)).status, 410);
+  if (competingPublication.status === 200) assert.equal((await hr.call(route + '/feedback', 'DELETE')).status, 200);
   const withdrawnRow = (await hr.call(exportPath)).body.trim().split('\r\n')[1];
   const withdrawnCells = withdrawnRow.split(',').map(cell => cell.slice(1, -1));
   assert.deepEqual(withdrawnCells.slice(6, 10), ['', '', '', '']);
   assert.equal(withdrawnCells[10], f.db.prepare(
-    "SELECT created_at FROM audit WHERE resource_id=? AND action='feedback.retract'"
+    "SELECT max(created_at) AS created_at FROM audit WHERE resource_id=? AND action='feedback.retract'"
   ).get(invitation.id).created_at);
   assert.equal((await candidate.call('/api/portal/me')).body.feedback, null);
   assert.equal((await result(finalLink)).status, 410);
@@ -175,7 +190,11 @@ test('指定评审、独立草稿、改派、双评发布、撤回与历史记�
   assert.equal((await details()).workflow.lastPublication.decision.reason, decision.reason);
 
   const actions = f.db.prepare('SELECT action FROM review_workflow_events WHERE exam_id=? ORDER BY id').all(invitation.id).map(row => row.action);
-  assert.deepEqual(actions, ['review.assign', 'review.draft', 'review.submit', 'review.reassign', 'review.submit', 'feedback.publish', 'feedback.retract', 'review.reopen']);
+  assert.deepEqual(actions, ['review.assign', 'review.draft', 'review.submit', 'review.reassign', 'review.submit',
+    'feedback.publish', 'feedback.retract',
+    ...(competingPublication.status === 200 ? ['feedback.publish', 'feedback.retract'] : []),
+    'review.reopen'
+  ]);
 });
 
 test('岗位默认安排仅影响新邀请，通知与时长调整在服务端校验并留痕', async t => {

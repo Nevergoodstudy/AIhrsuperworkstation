@@ -11,10 +11,19 @@ import { digest, id, now, token } from '../server/security.mjs';
 import { fixture, setupBusiness } from '../tests/helpers.mjs';
 import { createBackup, restoreBackup } from './backup.mjs';
 
-const { values } = parseArgs({ options: { seconds: { type: 'string', default: '900' }, rounds: { type: 'string', default: '3' } } });
+const { values } = parseArgs({ options: {
+  seconds: { type: 'string', default: '900' },
+  rounds: { type: 'string', default: '3' },
+  size: { type: 'string' },
+  'interval-ms': { type: 'string', default: '1400' }
+} });
 const seconds = Number(values.seconds), rounds = Number(values.rounds);
+const intervalMs = Number(values['interval-ms']);
+const tiers = [[1000, 20], [10000, 100]];
 assert.ok(Number.isInteger(seconds) && seconds >= 5 && seconds <= 1800, '--seconds 需要 5–1800 的整数');
 assert.ok(Number.isInteger(rounds) && rounds >= 1 && rounds <= 10, '--rounds 需要 1–10 的整数');
+assert.ok(Number.isInteger(intervalMs) && intervalMs >= 100 && intervalMs <= 5000, '--interval-ms 需要 100–5000 的整数');
+assert.ok(values.size === undefined || tiers.some(([size]) => String(size) === values.size), '--size 只接受 1000 或 10000');
 const resume = 'Synthetic resume with Node.js and SQL experience. '.repeat(85);
 const resumeHash = digest(resume);
 const stage = '待筛选';
@@ -122,7 +131,7 @@ async function exercise(f, staff, business, exams, outputDir) {
       }));
       if (cycle === 0) batch.push(measure('backup', async () => { snapshot = await createBackup(f.dataDir, outputDir); }));
       await Promise.all(batch);
-      await delay(Math.max(0, 1400 - (performance.now() - tick)));
+      await delay(Math.max(0, intervalMs - (performance.now() - tick)));
     }
   } finally { eventLoop.disable(); }
   const elapsedSeconds = +((performance.now() - started) / 1000).toFixed(2);
@@ -149,11 +158,14 @@ async function exercise(f, staff, business, exams, outputDir) {
   return {
     elapsedSeconds, workspaceBytes, workspaceP95Ms: p95(samples.workspace), autosaveP95Ms: p95(samples.save),
     uploadP95Ms: samples.upload.length ? p95(samples.upload) : null, backupMs: +samples.backup[0].toFixed(2),
-    eventLoopP95Ms: +(eventLoop.percentile(95) / 1e6).toFixed(2), statuses, restored: true
+    eventLoopP95Ms: +(eventLoop.percentile(95) / 1e6).toFixed(2),
+    saves: samples.save.length, workspaceReads: samples.workspace.length, uploads: samples.upload.length,
+    statuses, restored: true
   };
 }
 
-for (const [size, concurrency] of [[1000,20], [10000,100]]) {
+for (const [size, concurrency] of tiers) {
+  if (values.size && String(size) !== values.size) continue;
   for (let round = 1; round <= rounds; round++) {
     const f = await fixture({ aiKey:'', smtpUrl:'' });
     const outputDir = await mkdtemp(path.join(os.tmpdir(), 'talentdesk-pilot-capacity-'));
@@ -163,7 +175,7 @@ for (const [size, concurrency] of [[1000,20], [10000,100]]) {
       const business = await setupBusiness(staff);
       const exams = seed(f.db, business, size, concurrency);
       const result = await exercise(f, staff, business, exams, outputDir);
-      console.log(JSON.stringify({ size, concurrency, round, node:process.version, sqlite:process.versions.sqlite, ...result }));
+      console.log(JSON.stringify({ size, concurrency, round, intervalMs, node:process.version, sqlite:process.versions.sqlite, ...result }));
       if (size === 1000) {
         assert.ok(result.workspaceP95Ms <= 800, '首档工作区 P95 超过 800 ms');
         assert.ok(result.autosaveP95Ms <= 1000, '首档保存 P95 超过 1 秒');

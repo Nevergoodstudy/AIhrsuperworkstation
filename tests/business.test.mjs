@@ -55,6 +55,35 @@ test('登录、CSRF、强制改密、停用和会话失效',async t=>{
  assert.equal((await admin.call('/api/admin/users','POST',{name:'无部门',email:'bad@example.test',password,role:'department',department:''})).status,400);
  assert.equal((await admin.call('/api/auth/logout','POST')).status,200);assert.equal((await admin.call('/api/admin')).status,401);
 });
+test('管理员审计以资源编号及 UTC 日期筛选较旧的记录', async t => {
+ const f = await fixture(); t.after(() => f.cleanup());
+ const admin = f.client(), hr = f.client(), department = f.client();
+ await admin.login('admin'); await hr.login(); await department.login('department');
+ const target = id();
+ f.db.prepare(`
+   INSERT INTO audit(actor_id,action,resource_id,created_at) VALUES
+   (?, 'exam.revoke', ?, '2020-01-02T00:00:00.000Z'),
+   (?, 'feedback.retract', ?, '2020-01-02T23:59:59.999Z'),
+   (?, 'exam.revoke', ?, '2020-01-03T00:00:00.000Z'),
+   (?, 'job.update', ?, '2020-01-02T12:00:00.000Z')
+ `).run(f.accounts.hr.id, target, f.accounts.hr.id, target, f.accounts.hr.id, target, f.accounts.hr.id, id());
+ f.db.exec(`
+   WITH RECURSIVE entries(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM entries WHERE n<201)
+   INSERT INTO audit(actor_id,action,resource_id,created_at)
+   SELECT 'system','test.newer','newer','2020-01-04T00:00:00.000Z' FROM entries
+ `);
+ const unfiltered = await admin.call('/api/admin');
+ assert.equal(unfiltered.body.audit.length, 200);
+ assert.ok(!unfiltered.body.audit.some(row => row.resource_id === target));
+ const start = '/api/admin?' + new URLSearchParams({ resourceId: target, from: '2020-01-02', to: '2020-01-02' });
+ const result = await admin.call(start);
+ assert.equal(result.status, 200);
+ assert.deepEqual(result.body.audit.map(row => row.action), ['feedback.retract', 'exam.revoke']);
+ assert.equal((await admin.call('/api/admin?from=2020-01-03&to=2020-01-02')).status, 400);
+ assert.equal((await admin.call('/api/admin?to=2020-02-31')).status, 400);
+ assert.equal((await hr.call(start)).status, 403);
+ assert.equal((await department.call(start)).status, 403);
+});
 test('服务器限时、到期邀请、撤销与版本冲突',async t=>{
  const f=await fixture();t.after(()=>f.cleanup());const hr=f.client(),p=f.client();await hr.login();const b=await setupBusiness(hr);let link=await invite(hr,b);
  f.db.prepare('UPDATE exams SET expires_at=? WHERE id=?').run('2020-01-01T00:00:00.000Z',link.id);assert.equal((await p.call('/api/portal/redeem','POST',{token:link.token})).status,410);
